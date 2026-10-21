@@ -3,47 +3,26 @@ package server
 import (
 	"bytes"
 	"database/sql"
-	"errors"
-	"image/png"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
-)
 
-var errSkin = errors.New("请上传不超过 1 MiB 的 64×64 或 64×32 PNG 皮肤；纤细模型须使用 64×64。")
+	"github.com/zhyupe/atto-skin-go/internal/skin"
+)
 
 func readSkin(r *http.Request) ([]byte, string, error) {
 	model := r.FormValue("model")
 	if model == "" {
 		model = "default"
 	}
-	if model != "default" && model != "slim" {
-		return nil, "", errSkin
-	}
 	f, _, err := r.FormFile("file")
 	if err != nil {
-		return nil, "", errSkin
+		return nil, "", skin.ErrInvalid
 	}
 	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, (1<<20)+1))
-	if err != nil || len(raw) > 1<<20 {
-		return nil, "", errSkin
-	}
-	cfg, err := png.DecodeConfig(bytes.NewReader(raw))
-	if err != nil || cfg.Width != 64 || (cfg.Height != 32 && cfg.Height != 64) || (model == "slim" && cfg.Height != 64) {
-		return nil, "", errSkin
-	}
-	img, err := png.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, "", errSkin
-	}
-	var b bytes.Buffer
-	if err = png.Encode(&b, img); err != nil {
-		return nil, "", err
-	}
-	return b.Bytes(), model, nil
+	data, err := skin.Normalize(f, model)
+	return data, model, err
 }
 func (s *Server) setSkin(uid string, data []byte, model, tokenHash string) error {
 	tx, err := s.db.Begin()

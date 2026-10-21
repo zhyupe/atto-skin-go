@@ -1,4 +1,6 @@
 /data/
 /atto-skin-go
+/atto-import-blessing
+/migration/
 /.env
 /coverage.out

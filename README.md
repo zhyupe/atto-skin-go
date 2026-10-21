@@ -10,6 +10,17 @@
 
 不包含披风、皮肤公共库、多角色、站内密码注册或管理员后台。
 
+## 从 Blessing Skin 迁移
+
+提供 `atto-import-blessing` 命令：只读连接旧站 MySQL，导出账号/角色映射表，按显式指定的 OIDC `sub` 导入单角色与当前皮肤，并保留原 UUID。默认试运行，传入 `-apply` 才会提交；遇到冲突整批回滚，重复导入相同内容不会重置账号。
+
+```sh
+go build -o atto-import-blessing ./cmd/atto-import-blessing
+./atto-import-blessing -help
+```
+
+完整步骤、映射表说明和 **MySQL dump 恢复后导入** 的方法见 [Blessing Skin 迁移指南](docs/import-blessing.md)。数据库备份之外，还需要旧站的 `storage/textures` 图片目录。旧密码和游戏令牌不迁移，用户通过 OIDC 登录后生成新的启动器密钥。
+
 ## 运行
 
 需要 Go 1.26 或更新版本。使用环境变量配置；程序本身不自动读取 `.env`。

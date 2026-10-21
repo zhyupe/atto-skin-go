@@ -2,4 +2,6 @@
 .env
 data
 atto-skin-go
+atto-import-blessing
+migration
 coverage.out
