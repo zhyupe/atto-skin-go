@@ -97,7 +97,7 @@ func ImportProfiles(ctx context.Context, dir string, profiles []ImportedProfile,
 	if err = db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return result, err
 	}
-	if version != 1 {
+	if version != 1 && version != 2 {
 		return result, fmt.Errorf("unsupported target schema version %d", version)
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -151,6 +151,11 @@ func ImportProfiles(ctx context.Context, dir string, profiles []ImportedProfile,
 		_, err = tx.ExecContext(ctx, "INSERT INTO users(id,issuer,subject,name,skin_hash,model) VALUES(?,?,?,?,?,?)", p.ID, p.Issuer, p.Subject, p.Name, hashes[i], p.Model)
 		if err != nil {
 			return ImportResult{}, err
+		}
+		if hashes[i] != "" {
+			if err = rememberSkin(tx, p.ID, hashes[i], p.Model); err != nil {
+				return ImportResult{}, err
+			}
 		}
 	}
 	if apply {

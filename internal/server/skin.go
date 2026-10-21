@@ -36,10 +36,20 @@ func (s *Server) setSkin(uid string, data []byte, model, tokenHash string) error
 			return err
 		}
 	}
+	// Preserve the previous selection even for profiles imported by older releases.
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO skin_history(user_id,skin_hash,model,last_used)
+ SELECT id,skin_hash,model,0 FROM users WHERE id=? AND skin_hash != ''`, uid); err != nil {
+		return err
+	}
 	hash := ""
 	if data != nil {
 		hash = digest(string(data))
 		if _, err = tx.Exec("INSERT OR IGNORE INTO textures(hash,png) VALUES(?,?)", hash, data); err != nil {
+			return err
+		}
+	}
+	if hash != "" {
+		if err = rememberSkin(tx, uid, hash, model); err != nil {
 			return err
 		}
 	}

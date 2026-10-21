@@ -136,6 +136,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /account/profile", s.withSession(s.rename))
 	m.HandleFunc("POST /account/skin", s.withSession(s.uploadWeb))
 	m.HandleFunc("POST /account/skin/delete", s.withSession(s.deleteWeb))
+	m.HandleFunc("POST /account/skin/restore", s.withSession(s.restoreWeb))
 	m.HandleFunc("POST /account/launcher-key", s.withSession(s.rotateKey))
 	m.HandleFunc("GET /textures/{hash}", s.texture)
 	m.HandleFunc("GET /yggdrasil", s.metadata)

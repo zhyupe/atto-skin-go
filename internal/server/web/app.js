@@ -10,8 +10,7 @@ for (const button of document.querySelectorAll('[data-copy]')) {
 for (const form of document.querySelectorAll('[data-confirm]')) {
   form.addEventListener('submit', event => { if (!window.confirm(form.dataset.confirm)) event.preventDefault(); });
 }
-const canvas = document.getElementById('skin-preview');
-if (canvas) {
+for (const canvas of document.querySelectorAll('canvas[data-skin]')) {
   const image = new Image();
   image.onload = () => {
     const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false;

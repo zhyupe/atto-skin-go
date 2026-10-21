@@ -17,9 +17,6 @@ import (
 )
 
 const schema = `
-PRAGMA foreign_keys=ON;
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS users (
  id TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL,
  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -43,7 +40,15 @@ CREATE TABLE IF NOT EXISTS joins (
  ip TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(server_id,user_id)
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value BLOB NOT NULL);
-PRAGMA user_version=1;
+CREATE TABLE IF NOT EXISTS skin_history (
+ user_id TEXT NOT NULL REFERENCES users(id), skin_hash TEXT NOT NULL REFERENCES textures(hash),
+ model TEXT NOT NULL CHECK(model IN ('default','slim')), last_used INTEGER NOT NULL,
+ PRIMARY KEY(user_id,skin_hash,model)
+);
+CREATE INDEX IF NOT EXISTS skin_history_recent ON skin_history(user_id,last_used DESC,skin_hash,model);
+INSERT OR IGNORE INTO skin_history(user_id,skin_hash,model,last_used)
+ SELECT id,skin_hash,model,0 FROM users WHERE skin_hash != '';
+PRAGMA user_version=2;
 `
 
 type user struct {
@@ -88,11 +93,21 @@ func openDB(dir string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err == nil && version > 1 {
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err == nil && version > 2 {
 		err = fmt.Errorf("database schema %d is newer than this application", version)
 	}
 	if err == nil {
-		_, err = db.Exec(schema)
+		_, err = db.Exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+	}
+	if err == nil {
+		var tx *sql.Tx
+		tx, err = db.Begin()
+		if err == nil {
+			if _, err = tx.Exec(schema); err == nil {
+				err = tx.Commit()
+			}
+			tx.Rollback()
+		}
 	}
 	if err != nil {
 		db.Close()
