@@ -48,6 +48,39 @@ docker compose up -d --build
 
 Compose 默认只将端口暴露在宿主机 `127.0.0.1:8080`，数据写入命名卷 `atto-data`。公网部署需在前面配置 HTTPS 反向代理，并将 `BASE_URL` 改为公网 HTTPS 地址。
 
+## GHCR 镜像
+
+GitHub Actions 在 Go 测试和 MySQL 集成测试通过后，构建并发布 `linux/amd64`、`linux/arm64` 镜像到：
+
+```text
+ghcr.io/zhyupe/atto-skin-go
+```
+
+镜像包含服务端和 `atto-import-blessing`，以 UID/GID `10001:10001` 运行，数据目录为 `/data`。使用现成镜像无需安装 Go：
+
+```sh
+cp .env.example .env
+# 填好 BASE_URL 和 OIDC 信息
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+```
+
+`compose.ghcr.yaml` 独立使用；原 `compose.yaml` 仍用于本地源码构建。两份文件在同一项目目录使用相同的服务名和数据卷名。更新已部署镜像时，重新执行上面的 `pull` 和 `up -d`；切换 Compose 项目目录或项目名会改变默认数据卷名。
+
+发布规则：
+
+| 触发方式 | 镜像标签 |
+| --- | --- |
+| 默认分支 `kamisama` 的 push / 手动运行 | `latest`、`kamisama`、`sha-<完整提交 SHA>` |
+| 推送 `v*` 标签，例如 `v1.2.3` | `v1.2.3`、`sha-<完整提交 SHA>`；不修改 `latest` |
+| Pull request | 执行镜像构建与容器检查，不登录 GHCR、不发布 |
+
+可在 `.env` 中设置 `ATTO_IMAGE_TAG=sha-<完整提交 SHA>` 或 `ATTO_IMAGE_TAG=v1.2.3` 固定版本。版本标签应指向已经审核的提交，例如 `git tag v1.2.3 <commit>` 后 `git push origin v1.2.3`。也可在 GitHub Actions 的 **CI → Run workflow** 中选择默认分支手动发布。
+
+发布使用 GitHub 自动提供的 `GITHUB_TOKEN`，只有镜像 job 授予 `packages: write`，不需要额外配置 PAT。GHCR 包的可见性独立于 GitHub 仓库；若镜像为 private，拉取前需登录有 `read:packages` 权限的账号。需要匿名拉取时，在 GitHub Packages 的包设置中将该包设为 public。
+
+容器迁移工具使用方式见 [迁移指南](docs/import-blessing.md#容器部署的目标目录)。使用 GHCR 部署时，将指南中的 `docker compose` 改为 `docker compose -f compose.ghcr.yaml`。
+
 ## OIDC 配置
 
 在身份提供方创建一个 OpenID Connect Web 客户端，启用 Authorization Code flow 和 PKCE S256。回调地址必须完整匹配：

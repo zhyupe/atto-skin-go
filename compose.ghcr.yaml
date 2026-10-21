@@ -1,0 +1,17 @@
+# Use this file by itself: docker compose -f compose.ghcr.yaml up -d
+services:
+  atto-skin:
+    image: ghcr.io/zhyupe/atto-skin-go:${ATTO_IMAGE_TAG:-latest}
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER in .env}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?Set OIDC_CLIENT_ID in .env}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+    volumes:
+      - atto-data:/data
+    restart: unless-stopped
+volumes:
+  atto-data:
