@@ -1,0 +1,5 @@
+.git
+.env
+data
+atto-skin-go
+coverage.out
