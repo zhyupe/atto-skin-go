@@ -61,7 +61,7 @@
 <p class="hint">上传后自动保留在历史皮肤中。</p><p id="upload-error" class="form-error" role="alert" hidden></p><button class="primary full" id="upload-submit" type="submit">保存皮肤</button>
 </form></dialog>
 <dialog open class="settings-panel" id="connect-panel" aria-labelledby="connect-title" {{if .LauncherKey}}data-auto-open{{end}}><div class="dialog-head"><h2 id="connect-title">连接启动器</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div><p class="dialog-intro">在支持 authlib-injector 的启动器中添加外置登录，填入以下信息。</p>
-<label class="field-label" for="endpoint">认证服务器地址</label><div class="copy-field"><input id="endpoint" readonly value="{{.BaseURL}}/yggdrasil/"><button type="button" data-copy="endpoint">复制</button></div>
+<label class="field-label" for="endpoint">认证服务器地址</label><div class="copy-field"><input id="endpoint" readonly value="{{.BaseURL}}/api/yggdrasil/"><button type="button" data-copy="endpoint">复制</button></div>
 <label class="field-label" for="player-name">用户名</label><div class="copy-field"><input id="player-name" readonly value="{{.User.Name}}"><button type="button" data-copy="player-name">复制</button></div>
 <div class="key-section"><h3>启动器密钥</h3><p>用专用密钥登录游戏，无需填写统一账号密码。</p>
 {{if .LauncherKey}}<div class="key-reveal"><strong>请保存密钥，完整内容仅在此显示一次。</strong><label class="field-label" for="launcher-key">启动器密钥</label><div class="copy-field"><input id="launcher-key" readonly value="{{.LauncherKey}}"><button type="button" data-copy="launcher-key">复制</button></div></div>{{end}}

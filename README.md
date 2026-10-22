@@ -126,7 +126,7 @@ https://skin.example.com/auth/callback
 2. 修改角色名，上传皮肤，选择经典或纤细模型。
 3. 点击「生成启动器密钥」，保存显示的密钥。
 4. 在支持 authlib-injector 的启动器中添加外置登录：
-   - 认证服务器地址：`https://skin.example.com/yggdrasil/`
+   - 认证服务器地址：`https://skin.example.com/api/yggdrasil/`
    - 用户名：页面中的角色名
    - 密码：生成的启动器密钥
 5. Minecraft 客户端和服务端均使用 authlib-injector，并指向同一个认证服务器；服务端使用 `online-mode=true`。
@@ -134,7 +134,7 @@ https://skin.example.com/auth/callback
 服务端 Java 参数示例（自行获取 authlib-injector JAR）：
 
 ```sh
-java -javaagent:authlib-injector.jar=https://skin.example.com/yggdrasil/ -jar server.jar nogui
+java -javaagent:authlib-injector.jar=https://skin.example.com/api/yggdrasil/ -jar server.jar nogui
 ```
 
 启动器的传统 Yggdrasil 密码接口不能直接执行浏览器 OIDC 跳转，因此使用独立的随机启动器密钥。它不是身份提供方密码，也不是 OIDC access token。密钥完整内容仅在生成时显示，数据库只保存 SHA-256 摘要。密钥为 256 位随机值，不接受用户设置的弱密码。
@@ -167,7 +167,7 @@ TRUSTED_PROXIES=127.0.0.1/32,::1/128
 
 ## 协议接口
 
-API Root 为 `/yggdrasil/`；站点响应提供 `X-Authlib-Injector-API-Location`，支持认证服务器地址发现。
+API Root 为 `/api/yggdrasil/`；站点响应提供 `X-Authlib-Injector-API-Location`，支持认证服务器地址发现。
 
 | 方法 | 相对于 API Root 的路径 | 功能 |
 | --- | --- | --- |

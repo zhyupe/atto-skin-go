@@ -24,7 +24,7 @@ func TestSkinHistoryUploadRestoreAndIsolation(t *testing.T) {
 	u, _ = s.userByID(u.ID)
 	hash := u.SkinHash
 	raw := loginGame(t, s, "Alice", key, "c")["accessToken"].(string)
-	path := "/yggdrasil/api/user/profile/" + u.ID + "/skin"
+	path := "/api/yggdrasil/api/user/profile/" + u.ID + "/skin"
 	// Same PNG with two arm models must remain two distinct selections, without duplicates.
 	for i := 0; i < 2; i++ {
 		b, ct = multipartBody(t, original, "default", "")
@@ -63,7 +63,7 @@ func TestSkinHistoryUploadRestoreAndIsolation(t *testing.T) {
 			t.Fatalf("missing rendered content %q", text)
 		}
 	}
-	w := request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false", nil, nil, nil)
+	w := request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false", nil, nil, nil)
 	expect(t, w, 200)
 	p := unmarshal[profile](t, w)
 	verifyProfile(t, s, p)
@@ -83,7 +83,7 @@ func TestSkinHistoryUploadRestoreAndIsolation(t *testing.T) {
 	if payload.Textures["SKIN"].URL != s.cfg.BaseURL+"/textures/"+hash || payload.Textures["SKIN"].Metadata["model"] != "slim" {
 		t.Fatal("protocol did not use restored skin/model")
 	}
-	expect(t, jsonReq(s, "/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 204)
 }
 
 func TestHistoryPagination(t *testing.T) {

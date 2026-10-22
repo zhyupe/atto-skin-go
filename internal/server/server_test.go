@@ -158,7 +158,7 @@ func formReq(s *Server, path string, v url.Values, cookie *http.Cookie) *httptes
 }
 func loginGame(t *testing.T, s *Server, name, key, client string) map[string]any {
 	t.Helper()
-	w := jsonReq(s, "/yggdrasil/authserver/authenticate", map[string]any{"username": name, "password": key, "clientToken": client, "requestUser": true, "agent": map[string]any{"name": "Minecraft", "version": 1}})
+	w := jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]any{"username": name, "password": key, "clientToken": client, "requestUser": true, "agent": map[string]any{"name": "Minecraft", "version": 1}})
 	expect(t, w, 200)
 	return unmarshal[map[string]any](t, w)
 }
@@ -271,24 +271,24 @@ func TestTokenLifecycleAndSessionProof(t *testing.T) {
 	}
 	raw := v["accessToken"].(string)
 	validate := func(token, client string, intended int) {
-		expect(t, jsonReq(s, "/yggdrasil/authserver/validate", map[string]string{"accessToken": token, "clientToken": client}), intended)
+		expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": token, "clientToken": client}), intended)
 	}
 	validate(raw, "wrong", 403)
 	validate(raw, "client", 204)
-	expect(t, jsonReq(s, "/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": newUUID(), "serverId": "abc"}), 403)
-	expect(t, jsonReq(s, "/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "abc"}), 204)
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=wrong", nil, nil, nil), 204)
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.2", nil, nil, nil), 204)
-	w := request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.1", nil, nil, nil)
+	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": newUUID(), "serverId": "abc"}), 403)
+	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "abc"}), 204)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=wrong", nil, nil, nil), 204)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.2", nil, nil, nil), 204)
+	w := request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.1", nil, nil, nil)
 	expect(t, w, 200)
 	verifyProfile(t, s, unmarshal[profile](t, w))
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=::ffff:192.0.2.1", nil, nil, nil), 200)
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=invalid", nil, nil, nil), 204)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw, "clientToken": "wrong"}), 403)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=::ffff:192.0.2.1", nil, nil, nil), 200)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=invalid", nil, nil, nil), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw, "clientToken": "wrong"}), 403)
 	validate(raw, "client", 204)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/refresh", map[string]any{"accessToken": raw, "selectedProfile": basicProfile(u)}), 400)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]any{"accessToken": raw, "selectedProfile": basicProfile(u)}), 400)
 	validate(raw, "client", 204)
-	w = jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
+	w = jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
 	expect(t, w, 200)
 	next := unmarshal[map[string]any](t, w)
 	fresh := next["accessToken"].(string)
@@ -297,13 +297,13 @@ func TestTokenLifecycleAndSessionProof(t *testing.T) {
 	}
 	validate(raw, "client", 403)
 	validate(fresh, "client", 204)
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc", nil, nil, nil), 204)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/invalidate", map[string]string{"accessToken": fresh, "clientToken": "ignored"}), 204)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc", nil, nil, nil), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/invalidate", map[string]string{"accessToken": fresh, "clientToken": "ignored"}), 204)
 	validate(fresh, "client", 403)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/invalidate", map[string]string{"accessToken": "missing"}), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/invalidate", map[string]string{"accessToken": "missing"}), 204)
 	a := loginGame(t, s, "Alice", key, "a")["accessToken"].(string)
 	b := loginGame(t, s, "Alice", key, "b")["accessToken"].(string)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/signout", map[string]string{"username": "Alice", "password": key}), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "Alice", "password": key}), 204)
 	validate(a, "a", 403)
 	validate(b, "b", 403)
 }
@@ -330,7 +330,7 @@ func TestConcurrentRefreshAndTokenLimit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			statuses <- jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}).Code
+			statuses <- jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}).Code
 		}()
 	}
 	wg.Wait()
@@ -369,8 +369,8 @@ func TestRenameCSRFAndKeyRotation(t *testing.T) {
 	if err != nil || renamed.ID != u.ID {
 		t.Fatal("rename changed UUID")
 	}
-	expect(t, jsonReq(s, "/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
-	refreshed := jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
+	refreshed := jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
 	expect(t, refreshed, 200)
 	token := unmarshal[map[string]any](t, refreshed)
 	if token["selectedProfile"].(map[string]any)["name"] != "NewAlice" {
@@ -378,8 +378,8 @@ func TestRenameCSRFAndKeyRotation(t *testing.T) {
 	}
 	raw = token["accessToken"].(string)
 	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 200)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/authenticate", map[string]string{"username": "NewAlice", "password": key}), 403)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]string{"username": "NewAlice", "password": key}), 403)
 	expect(t, formReq(s, "/auth/logout", url.Values{"csrf": {csrf}}, cookie), 303)
 	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 401)
 }
@@ -414,7 +414,7 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 	u, key := seed(t, s, "a", "Alice")
 	other, _ := seed(t, s, "b", "Bob")
 	raw := loginGame(t, s, "Alice", key, "c")["accessToken"].(string)
-	path := "/yggdrasil/api/user/profile/" + u.ID + "/skin"
+	path := "/api/yggdrasil/api/user/profile/" + u.ID + "/skin"
 	upload := func(path string, data []byte, model string) *httptest.ResponseRecorder {
 		b, ct := multipartBody(t, data, model, "")
 		return request(s, "PUT", path, b, nil, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + raw})
@@ -424,7 +424,7 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 	expect(t, upload(path, pngData(t, 64, 32), "slim"), 400)
 	expect(t, upload(path, pngData(t, 64, 64), "unknown"), 400)
 	expect(t, upload(path, make([]byte, (1<<20)+1), "default"), 400)
-	expect(t, upload("/yggdrasil/api/user/profile/"+other.ID+"/skin", pngData(t, 64, 64), "slim"), 403)
+	expect(t, upload("/api/yggdrasil/api/user/profile/"+other.ID+"/skin", pngData(t, 64, 64), "slim"), 403)
 	original := pngData(t, 64, 64)
 	withJunk := append(append([]byte{}, original...), []byte("injected-metadata")...)
 	expect(t, upload(path, withJunk, "slim"), 204)
@@ -438,7 +438,7 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 		t.Fatal("bad texture headers")
 	}
 	expect(t, request(s, "GET", "/textures/"+u.SkinHash, nil, nil, map[string]string{"If-None-Match": w.Header().Get("ETag")}), 304)
-	w = request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false", nil, nil, nil)
+	w = request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false", nil, nil, nil)
 	expect(t, w, 200)
 	p := unmarshal[profile](t, w)
 	verifyProfile(t, s, p)
@@ -449,7 +449,7 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 	if skin["url"] != s.cfg.BaseURL+"/textures/"+u.SkinHash || skin["metadata"].(map[string]any)["model"] != "slim" {
 		t.Fatal("bad skin payload")
 	}
-	w = request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID, nil, nil, nil)
+	w = request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID, nil, nil, nil)
 	expect(t, w, 200)
 	if unmarshal[profile](t, w).Properties[0].Signature != "" {
 		t.Fatal("unsigned default")
@@ -472,7 +472,8 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 	s, _ := testServer(t)
 	u, key := seed(t, s, "a", "Alice")
-	w := request(s, "GET", "/yggdrasil/", nil, nil, nil)
+	expect(t, request(s, "GET", "/api/yggdrasil", nil, nil, nil), 200)
+	w := request(s, "GET", "/api/yggdrasil/", nil, nil, nil)
 	expect(t, w, 200)
 	metadata := unmarshal[map[string]any](t, w)
 	block, _ := pem.Decode([]byte(metadata["signaturePublickey"].(string)))
@@ -493,11 +494,11 @@ func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 		t.Fatal("key not persistent")
 	}
 	raw := loginGame(t, s, "Alice", key, "c")["accessToken"].(string)
-	expect(t, jsonReq(s, "/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "x"}), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "x"}), 204)
 	s.db.Exec("UPDATE joins SET expires=0")
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=x", nil, nil, nil), 204)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=x", nil, nil, nil), 204)
 	s.db.Exec("UPDATE tokens SET expires=0")
-	expect(t, jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}), 403)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}), 403)
 	if err = s.cleanup(); err != nil {
 		t.Fatal(err)
 	}
@@ -511,13 +512,13 @@ func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 	if s.clientIP(req) != "203.0.113.2" {
 		t.Fatal("trusted proxy not honored")
 	}
-	expect(t, jsonReq(s, "/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}), 200)
-	profiles := unmarshal[[]profile](t, jsonReq(s, "/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}))
+	expect(t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}), 200)
+	profiles := unmarshal[[]profile](t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}))
 	if len(profiles) != 1 {
 		t.Fatal("lookup deduplication")
 	}
-	expect(t, jsonReq(s, "/yggdrasil/api/profiles/minecraft", make([]string, 101)), 400)
-	expect(t, request(s, "GET", "/yggdrasil/sessionserver/session/minecraft/profile/"+newUUID(), nil, nil, nil), 204)
+	expect(t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", make([]string, 101)), 400)
+	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+newUUID(), nil, nil, nil), 204)
 }
 func TestRequestLimitsAndBrowserProtection(t *testing.T) {
 	s, _ := testServer(t)
@@ -525,15 +526,15 @@ func TestRequestLimitsAndBrowserProtection(t *testing.T) {
 	cookie, csrf := browser(t, s, u)
 	expect(t, request(s, "POST", "/account/profile", strings.NewReader(url.Values{"name": {"Changed"}, "csrf": {csrf}}.Encode()), cookie, map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://evil.example"}), 403)
 	for _, input := range []string{"{", "{}{}", strings.Repeat("x", 70<<10)} {
-		expect(t, request(s, "POST", "/yggdrasil/authserver/authenticate", strings.NewReader(input), nil, nil), 400)
+		expect(t, request(s, "POST", "/api/yggdrasil/authserver/authenticate", strings.NewReader(input), nil, nil), 400)
 	}
 	for i := 0; i < 20; i++ {
-		expect(t, jsonReq(s, "/yggdrasil/authserver/authenticate", map[string]string{"username": "Alice", "password": "bad"}), 403)
+		expect(t, jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]string{"username": "Alice", "password": "bad"}), 403)
 	}
-	expect(t, jsonReq(s, "/yggdrasil/authserver/signout", map[string]string{"username": "alice", "password": "bad"}), 429)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "alice", "password": "bad"}), 429)
 	w := request(s, "GET", "/", nil, nil, nil)
 	expect(t, w, 200)
-	if w.Header().Get("X-Authlib-Injector-API-Location") != s.cfg.BaseURL+"/yggdrasil/" || w.Header().Get("Content-Security-Policy") == "" || w.Header().Get("Referrer-Policy") != "same-origin" {
+	if w.Header().Get("X-Authlib-Injector-API-Location") != s.cfg.BaseURL+"/api/yggdrasil/" || w.Header().Get("Content-Security-Policy") == "" || w.Header().Get("Referrer-Policy") != "same-origin" {
 		t.Fatal("missing security/discovery headers")
 	}
 	s.db.Exec("UPDATE web_sessions SET expires=0")
@@ -565,8 +566,8 @@ func TestRenameUsesCurrentNameDuringConcurrentRequests(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.rename(w, r, staleSession)
 	expect(t, w, 303)
-	expect(t, jsonReq(s, "/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
-	refreshed := jsonReq(s, "/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
+	refreshed := jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
 	expect(t, refreshed, 200)
 	if unmarshal[map[string]any](t, refreshed)["selectedProfile"].(map[string]any)["name"] != "Alice" {
 		t.Fatal("refresh must use current name")
