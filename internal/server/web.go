@@ -15,6 +15,7 @@ type pageData struct {
 	History                             []historySkin
 	HistoryPage, PreviousPage, NextPage int
 	HasPrevious, HasNext                bool
+	HistoryCount                        int
 }
 
 func (s *Server) render(w http.ResponseWriter, v session, message, key string, status int) {
@@ -31,6 +32,10 @@ func (s *Server) renderPage(w http.ResponseWriter, v session, message, key strin
 		}
 		data.HistoryPage, data.PreviousPage, data.NextPage = page+1, page-1, page+1
 		data.HasPrevious = page > 0
+		if err = s.db.QueryRow("SELECT count(*) FROM skin_history WHERE user_id=?", v.User.ID).Scan(&data.HistoryCount); err != nil {
+			internalError(w, err)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -58,7 +63,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	file := r.PathValue("file")
-	types := map[string]string{"style.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8"}
+	types := map[string]string{"style.css": "text/css; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "theme.js": "text/javascript; charset=utf-8", "skin-renderer.js": "text/javascript; charset=utf-8"}
 	contentType, ok := types[file]
 	if !ok {
 		http.NotFound(w, r)

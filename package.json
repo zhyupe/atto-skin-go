@@ -1,0 +1,11 @@
+{
+  "name": "atto-skin-go-ui-tests",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/skin-renderer.test.cjs",
+    "test:browser": "ATTO_BROWSER_TEST=1 go test ./internal/server -run TestBrowserWardrobe -count=1 -v"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

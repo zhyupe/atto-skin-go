@@ -158,7 +158,7 @@ func (s *Server) Handler() http.Handler {
 		// no-referrer turns the Origin of browser form POSTs into "null".
 		// Keep same-origin form submissions verifiable without leaking callback URLs externally.
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		w.Header().Set("X-Authlib-Injector-API-Location", s.cfg.BaseURL+"/yggdrasil/")
 		w.Header().Set("Cache-Control", "no-store")
 		m.ServeHTTP(w, r)

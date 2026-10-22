@@ -11,6 +11,7 @@ const historyPageSize = 12
 type historySkin struct {
 	Hash, Model string
 	Current     bool
+	Number      int
 }
 
 func rememberSkin(tx *sql.Tx, uid, hash, model string) error {
@@ -32,6 +33,7 @@ func (s *Server) skinHistory(u user, page int) ([]historySkin, bool, error) {
 		if err = rows.Scan(&item.Hash, &item.Model); err != nil {
 			return nil, false, err
 		}
+		item.Number = page*historyPageSize + len(skins) + 1
 		item.Current = item.Hash == u.SkinHash && item.Model == u.Model
 		skins = append(skins, item)
 	}

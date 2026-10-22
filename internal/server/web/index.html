@@ -1,32 +1,74 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Atto Skin · 我的 Minecraft 皮肤</title><link rel="stylesheet" href="/static/style.css"><script defer src="/static/app.js"></script></head>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
+<title>Atto Skin · 我的 Minecraft 皮肤</title>
+<script src="/static/theme.js"></script><link rel="stylesheet" href="/static/style.css">
+<script defer src="/static/skin-renderer.js"></script><script defer src="/static/app.js"></script>
+</head>
 <body>
-<header><a class="brand" href="/">atto<span>skin</span></a><span class="header-label">Minecraft 皮肤站</span>{{if .LoggedIn}}<form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="quiet">退出登录</button></form>{{end}}</header>
+<header class="topbar">
+<a class="brand" href="/">atto<span>skin</span></a>
+{{if .LoggedIn}}<nav><a class="tab active" href="#skin-history">我的皮肤</a><a class="tab" href="#connect-panel" data-open="connect-panel">连接启动器</a></nav>{{end}}
+<div class="header-tools"><button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换明暗模式">明暗</button>
+{{if .LoggedIn}}<a class="account" href="#account-panel" data-open="account-panel"><span class="avatar"><canvas width="40" height="40" id="avatar" aria-hidden="true"></canvas></span><span class="account-name">{{.User.Name}}</span><span class="chevron" aria-hidden="true">⌄</span></a>{{end}}</div>
+</header>
 <main>
-{{if .Message}}<div class="notice" role="status">{{.Message}}</div>{{end}}
+{{if .Message}}<div class="server-message" id="server-message" role="status">{{.Message}}</div>{{end}}
+<section class="stage {{if not .LoggedIn}}welcome-stage{{end}}" aria-label="皮肤试穿" data-current-hash="{{.User.SkinHash}}" data-current-model="{{.User.Model}}" data-logged-in="{{.LoggedIn}}">
+<div class="player"><span class="micro">{{if .LoggedIn}}我的角色{{else}}Minecraft 皮肤站{{end}}</span><h1>{{if .LoggedIn}}{{.User.Name}}{{else}}你的换装间{{end}}</h1>{{if .LoggedIn}}<a class="text-button" href="#account-panel" data-open="account-panel">角色设置 <span aria-hidden="true">↗</span></a>{{else}}<p class="welcome-copy">一个角色，随时换上喜欢的皮肤。</p>{{end}}</div>
+<div class="stage-label" aria-live="polite"><span class="stage-state">{{if .LoggedIn}}{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}{{else}}示例模型{{end}}</span><span class="muted stage-description">{{if .User.SkinHash}}已经穿在身上{{else}}实际默认外观由游戏决定{{end}}</span></div>
+<div class="floor" aria-hidden="true"></div><div class="shadow" aria-hidden="true"></div>
+<canvas id="character" width="740" height="720" aria-label="皮肤预览，可拖动或使用左右方向键旋转" tabindex="0"></canvas>
+<p class="preview-error" id="preview-error" role="status" hidden></p>
+<noscript>{{if .User.SkinHash}}<img class="raw-preview" src="/textures/{{.User.SkinHash}}" alt="当前皮肤 PNG 展开图">{{else}}<p class="raw-preview-text">开启 JavaScript 可查看角色模型。</p>{{end}}</noscript>
+<div class="preview-controls enhanced-only"><button type="button" id="front" aria-label="查看正面">正面</button><button type="button" id="back" aria-label="查看背面">背面</button><span class="sep"></span><span>拖动旋转</span></div>
+<div class="selection">
 {{if .LoggedIn}}
-<div class="intro"><p class="eyebrow">我的角色</p><h1>{{.User.Name}}</h1><p>一个角色，一张皮肤。准备好，进入你的世界。</p></div>
-<div class="workspace">
-<aside class="appearance"><div class="preview">{{if .User.SkinHash}}<canvas id="skin-preview" width="128" height="256" data-skin="/textures/{{.User.SkinHash}}" data-model="{{.User.Model}}" aria-label="当前皮肤的正面预览"></canvas>{{else}}<div class="empty-skin"><strong>尚未设置皮肤</strong><p>上传 PNG，换上你的新外观。</p></div>{{end}}</div><div class="appearance-caption"><span>{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}</span>{{if .User.SkinHash}}<a href="/textures/{{.User.SkinHash}}" download="skin.png">下载 PNG</a>{{end}}</div><p class="uuid">UUID <code>{{.User.ID}}</code></p></aside>
-<div class="settings">
-<section><h2>皮肤</h2><p>支持 64×64 和经典 64×32 PNG，最大 1 MiB。</p><form method="post" action="/account/skin" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{.CSRF}}"><label for="skin-file">皮肤文件</label><input id="skin-file" type="file" name="file" accept="image/png,.png" required><label for="model">手臂模型</label><select id="model" name="model"><option value="default" {{if eq .User.Model "default"}}selected{{end}}>经典 · Steve（4 像素）</option><option value="slim" {{if eq .User.Model "slim"}}selected{{end}}>纤细 · Alex（3 像素，64×64）</option></select><button type="submit">保存皮肤</button></form>{{if .User.SkinHash}}<form class="inline-form" method="post" action="/account/skin/delete"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="quiet danger">恢复默认皮肤</button></form>{{end}}</section>
-<section id="skin-history"><h2>历史皮肤</h2><p>按最近使用排序。恢复默认外观后，历史皮肤仍会保留。</p>
-{{if .History}}<ul class="skin-history">{{range .History}}<li>
-<div class="history-preview"><canvas width="128" height="256" data-skin="/textures/{{.Hash}}" data-model="{{.Model}}" aria-label="历史皮肤的正面预览"></canvas></div>
-<p class="history-model">{{if eq .Model "slim"}}纤细 · Alex{{else}}经典 · Steve{{end}}</p>
-{{if .Current}}<span class="history-current">正在使用</span>{{else}}<form method="post" action="/account/skin/restore"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="hash" value="{{.Hash}}"><input type="hidden" name="model" value="{{.Model}}"><button class="secondary">使用此皮肤</button></form>{{end}}
-<a class="history-download" href="/textures/{{.Hash}}" download="skin.png">下载 PNG</a>
-</li>{{end}}</ul>{{else}}<p>{{if .HasPrevious}}这一页没有皮肤记录。{{else}}还没有历史皮肤，上传后会自动保存在这里。{{end}}</p>{{end}}
+<span class="micro">已选皮肤</span><div class="selection-title"><h2 id="selected-name">{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}</h2><span class="type" id="selected-model">{{if .User.SkinHash}}{{if eq .User.Model "slim"}}纤细 · Alex{{else}}经典 · Steve{{end}}{{else}}尚未设置皮肤{{end}}</span></div>
+<p id="selection-hint">先转一圈，看看新的自己。</p>
+<button class="primary enhanced-only" id="apply" type="button" disabled>{{if .User.SkinHash}}正在使用{{else}}选择一张皮肤{{end}}</button>
+<a class="download" id="download" {{if .User.SkinHash}}href="/textures/{{.User.SkinHash}}"{{else}}hidden{{end}} download="skin.png">下载 PNG <span aria-hidden="true">↓</span></a>
+<button class="text-button" id="cancel-preview" type="button" hidden>返回当前外观</button>
+{{else}}
+<h2>登录你的衣柜</h2><p>保存你的皮肤，连接你的世界。</p><a class="primary" href="/auth/login">使用统一账号登录 <span aria-hidden="true">↗</span></a><p class="hint">首次登录会自动创建一个角色。</p>
+{{end}}
+</div>
+</section>
+{{if .LoggedIn}}
+<section class="wardrobe" id="skin-history" aria-labelledby="wardrobe-heading">
+<div class="wardrobe-head"><div><h2 id="wardrobe-heading">历史皮肤 <span>{{.HistoryCount}}</span></h2><p>每次上传都在这里，随时换回来。</p></div><a class="upload-button" href="#upload-panel" data-open="upload-panel"><span aria-hidden="true">＋</span> 上传新皮肤</a></div>
+{{if .History}}
+<div class="skin-strip" role="group" aria-label="选择一张皮肤">
+{{range .History}}<form class="skin-item {{if .Current}}selected{{end}}" method="post" action="/account/skin/restore" data-hash="{{.Hash}}" data-model="{{.Model}}" data-title="皮肤 {{printf "%02d" .Number}}">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="hash" value="{{.Hash}}"><input type="hidden" name="model" value="{{.Model}}">
+<button class="skin-select" type="submit" aria-label="使用此皮肤，皮肤 {{.Number}}"><span class="skin-slot"><canvas width="230" height="270" data-skin="/textures/{{.Hash}}" data-model="{{.Model}}" aria-label="历史皮肤的正面预览"></canvas><noscript><img src="/textures/{{.Hash}}" alt="历史皮肤 PNG 展开图"></noscript>{{if .Current}}<span class="wearing">正在使用</span>{{end}}</span><span class="slot-caption"><span>皮肤 {{printf "%02d" .Number}}</span><small>{{if eq .Model "slim"}}Alex{{else}}Steve{{end}}</small></span><span class="fallback-only">使用此皮肤</span></button><a class="fallback-only" href="/textures/{{.Hash}}" download="skin.png">下载 PNG</a>
+</form>{{end}}
+</div>
+{{else}}<div class="empty-history"><h3>{{if .HasPrevious}}这一页没有皮肤记录{{else}}第一张皮肤，从这里开始{{end}}</h3><p>{{if .HasPrevious}}返回上一页查看已保存的皮肤。{{else}}上传一张 PNG，穿过的皮肤都会留在这里。{{end}}</p></div>{{end}}
+<div class="wardrobe-foot"><span>按最近使用排序</span>{{if .User.SkinHash}}<form method="post" action="/account/skin/delete" data-submit="skin"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">恢复默认皮肤</button></form>{{end}}</div>
 {{if or .HasPrevious .HasNext}}<nav class="history-pages" aria-label="皮肤历史分页">{{if .HasPrevious}}<a href="/?history_page={{.PreviousPage}}#skin-history">上一页</a>{{end}}<span>第 {{.HistoryPage}} 页</span>{{if .HasNext}}<a href="/?history_page={{.NextPage}}#skin-history">下一页</a>{{end}}</nav>{{end}}
 </section>
-<section><h2>角色名</h2><p>3–16 位英文字母、数字或下划线。改名后 UUID 保持不变。</p><form method="post" action="/account/profile"><input type="hidden" name="csrf" value="{{.CSRF}}"><label for="name">Minecraft 角色名</label><div class="input-row"><input id="name" name="name" value="{{.User.Name}}" pattern="[A-Za-z0-9_]{3,16}" minlength="3" maxlength="16" required autocomplete="off"><button class="secondary">保存名称</button></div></form></section>
-<section><h2>连接启动器</h2><p>在支持 authlib-injector 的启动器中添加外置登录，填写下方信息。</p><label for="endpoint">认证服务器地址</label><div class="input-row"><input id="endpoint" readonly value="{{.BaseURL}}/yggdrasil/"><button class="secondary" type="button" data-copy="endpoint">复制地址</button></div><dl><dt>用户名</dt><dd>{{.User.Name}}</dd><dt>密码</dt><dd>使用下方生成的启动器密钥</dd></dl>
-{{if .LauncherKey}}<div class="key-reveal"><strong>请保存密钥，完整内容仅在此显示一次。</strong><label for="launcher-key">启动器密钥</label><div class="input-row"><input id="launcher-key" readonly value="{{.LauncherKey}}"><button class="secondary" type="button" data-copy="launcher-key">复制密钥</button></div></div>{{end}}
-<form method="post" action="/account/launcher-key" {{if .HasKey}}data-confirm="重新生成会使旧密钥和全部游戏会话失效。继续吗？"{{end}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="secondary">{{if .HasKey}}重新生成启动器密钥{{else}}生成启动器密钥{{end}}</button></form><p class="hint">重新生成后，所有启动器都需要用新密钥登录。不要填写 OIDC 账号的密码。</p></section>
-</div></div>
-{{else}}
-<div class="welcome"><p class="eyebrow">你的 Minecraft 外观</p><h1>换上皮肤，<br>回到你的世界。</h1><p class="lead">登录后管理你的专属角色与皮肤，<br>通过外置登录连接 Minecraft。</p><a class="button" href="/auth/login">使用统一账号登录</a><p class="hint">首次登录自动创建一个角色，之后可以修改角色名。</p></div>
 {{end}}
-</main><footer><span>Atto Skin</span><span>皮肤 · 单角色 · 外置登录</span></footer><div id="copy-status" role="status" aria-live="polite"></div>
+</main>
+<footer><span>Minecraft Java Edition</span><span>皮肤换好后，重新进入服务器即可加载。</span></footer>
+{{if .LoggedIn}}
+<dialog open class="settings-panel" id="upload-panel" aria-labelledby="upload-title"><div class="dialog-head"><h2 id="upload-title">上传新皮肤</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div><p class="dialog-intro">从一张 PNG，开始新的冒险。</p>
+<form id="upload-form" method="post" action="/account/skin" enctype="multipart/form-data">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label class="dropzone" id="dropzone" for="skin-file"><span class="large-plus" aria-hidden="true">＋</span><strong id="file-name">选择或拖入皮肤文件</strong><span>64×64 / 64×32 PNG · 最大 1 MiB</span></label><input id="skin-file" type="file" name="file" accept="image/png,.png" required aria-label="皮肤文件">
+<label class="field-label" for="model">手臂模型</label><select id="model" name="model"><option value="default" {{if eq .User.Model "default"}}selected{{end}}>经典 · Steve（4 像素）</option><option value="slim" {{if eq .User.Model "slim"}}selected{{end}}>纤细 · Alex（3 像素，64×64）</option></select>
+<p class="hint">上传后自动保留在历史皮肤中。</p><p id="upload-error" class="form-error" role="alert" hidden></p><button class="primary full" id="upload-submit" type="submit">保存皮肤</button>
+</form></dialog>
+<dialog open class="settings-panel" id="connect-panel" aria-labelledby="connect-title" {{if .LauncherKey}}data-auto-open{{end}}><div class="dialog-head"><h2 id="connect-title">连接启动器</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div><p class="dialog-intro">在支持 authlib-injector 的启动器中添加外置登录，填入以下信息。</p>
+<label class="field-label" for="endpoint">认证服务器地址</label><div class="copy-field"><input id="endpoint" readonly value="{{.BaseURL}}/yggdrasil/"><button type="button" data-copy="endpoint">复制</button></div>
+<label class="field-label" for="player-name">用户名</label><div class="copy-field"><input id="player-name" readonly value="{{.User.Name}}"><button type="button" data-copy="player-name">复制</button></div>
+<div class="key-section"><h3>启动器密钥</h3><p>用专用密钥登录游戏，无需填写统一账号密码。</p>
+{{if .LauncherKey}}<div class="key-reveal"><strong>请保存密钥，完整内容仅在此显示一次。</strong><label class="field-label" for="launcher-key">启动器密钥</label><div class="copy-field"><input id="launcher-key" readonly value="{{.LauncherKey}}"><button type="button" data-copy="launcher-key">复制</button></div></div>{{end}}
+<form method="post" action="/account/launcher-key" {{if .HasKey}}data-confirm="重新生成会使旧密钥和全部游戏会话失效。继续吗？"{{end}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="outline" type="submit">{{if .HasKey}}重新生成启动器密钥{{else}}生成启动器密钥{{end}}</button></form><p class="hint">重新生成会使旧密钥与游戏会话失效。</p></div></dialog>
+<dialog open class="settings-panel" id="account-panel" aria-labelledby="account-title"><div class="dialog-head"><h2 id="account-title">角色设置</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div>
+<form method="post" action="/account/profile"><input type="hidden" name="csrf" value="{{.CSRF}}"><label class="field-label" for="name">Minecraft 角色名</label><input class="full-input" id="name" name="name" value="{{.User.Name}}" pattern="[A-Za-z0-9_]{3,16}" minlength="3" maxlength="16" required autocomplete="off"><p class="hint">3–16 位英文字母、数字或下划线。改名后 UUID 不变。</p><button class="primary full" type="submit">保存名称</button></form>
+<div class="key-section"><span class="field-label">角色 UUID</span><code>{{.User.ID}}</code><form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="text-button" type="submit">退出登录</button></form></div></dialog>
+{{end}}
+<div id="notice" role="status" aria-live="polite" hidden></div>
 </body></html>

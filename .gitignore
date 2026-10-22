@@ -4,3 +4,6 @@
 /migration/
 /.env
 /coverage.out
+
+node_modules/
+browser-artifacts/

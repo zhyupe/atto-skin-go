@@ -5,3 +5,6 @@ atto-skin-go
 atto-import-blessing
 migration
 coverage.out
+
+node_modules/
+browser-artifacts/
