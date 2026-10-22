@@ -26,6 +26,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	textures := flags.String("textures-dir", "", "copy of Blessing storage/textures")
 	dataDir := flags.String("data-dir", "", "Atto data directory (required except when exporting the mapping)")
 	apply := flags.Bool("apply", false, "commit the import; default is a read-only dry run")
+	historyOnly := flags.Bool("history-only", false, "append uploader library skins to already migrated accounts without changing their current profiles")
 	timeout := flags.Duration("timeout", 10*time.Minute, "maximum duration for reading and importing")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -36,8 +37,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if (*export == "") == (*mapping == "") {
 		return fmt.Errorf("specify exactly one of -export-mapping or -mapping")
 	}
-	if *export != "" && (*apply || *dataDir != "") {
-		return fmt.Errorf("-export-mapping cannot be combined with -apply or -data-dir")
+	if *export != "" && (*apply || *dataDir != "" || *historyOnly) {
+		return fmt.Errorf("-export-mapping cannot be combined with -apply, -data-dir or -history-only")
 	}
 	if *mapping != "" && (*dataDir == "" || *issuer == "") {
 		return fmt.Errorf("-data-dir and -oidc-issuer (or OIDC_ISSUER) are required")
@@ -77,11 +78,15 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	plan, err := blessing.BuildPlan(snapshot, mappings, *issuer, *textures)
+	buildPlan, importProfiles := blessing.BuildPlan, server.ImportProfiles
+	if *historyOnly {
+		buildPlan, importProfiles = blessing.BuildHistoryPlan, server.ImportProfileHistory
+	}
+	plan, err := buildPlan(snapshot, mappings, *issuer, *textures)
 	if err != nil {
 		return err
 	}
-	result, err := server.ImportProfiles(ctx, *dataDir, plan.Profiles, *apply)
+	result, err := importProfiles(ctx, *dataDir, plan.Profiles, *apply)
 	if err != nil {
 		return err
 	}
@@ -89,7 +94,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	if *apply {
 		mode = "COMMITTED"
 	}
-	fmt.Fprintf(out, "%s: %d new, %d identical existing, %d assigned skins; %d players explicitly skipped, %d accounts without players, %d capes omitted.\n", mode, result.Added, result.Unchanged, plan.Skins, plan.Skipped, plan.AccountsWithoutPlayers, plan.CapesOmitted)
+	fmt.Fprintf(out, "%s: %d new, %d existing profiles preserved, %d assigned skins; %d players explicitly skipped, %d accounts without players, %d capes omitted.\n", mode, result.Added, result.Unchanged, plan.Skins, plan.Skipped, plan.AccountsWithoutPlayers, plan.CapesOmitted)
+	fmt.Fprintf(out, "Library history: %d source skins selected by uploader, %d new entries, %d already present; %d library skins omitted because their uploaders are not mapped.\n", plan.HistorySkins, result.HistoryAdded, result.HistoryUnchanged, plan.HistorySkipped)
 	fmt.Fprintln(out, "Passwords, launcher tokens, closets, permissions and signing keys are not migrated. Imported users log in with OIDC and generate new launcher keys.")
 	return nil
 }

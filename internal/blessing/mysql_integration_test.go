@@ -63,15 +63,15 @@ func TestMySQLIntegration(t *testing.T) {
 			}
 			exec("CREATE TABLE `" + prefix + "users`(uid INT PRIMARY KEY,email VARCHAR(100),permission INT,password VARCHAR(255)) ENGINE=InnoDB")
 			exec("CREATE TABLE `" + prefix + "players`(pid INT PRIMARY KEY,uid INT,`" + nameColumn + "` VARCHAR(50),tid_skin INT,tid_cape INT) ENGINE=InnoDB")
-			exec("CREATE TABLE `" + prefix + "textures`(tid INT PRIMARY KEY,type VARCHAR(10),hash VARCHAR(64)) ENGINE=InnoDB")
+			exec("CREATE TABLE `" + prefix + "textures`(tid INT PRIMARY KEY,type VARCHAR(10),hash VARCHAR(64),uploader INT NULL,public BOOLEAN) ENGINE=InnoDB")
 			exec("CREATE TABLE `" + prefix + "uuid`(" + uuidColumns + ") ENGINE=InnoDB")
 			exec("CREATE TABLE `" + prefix + "options`(option_name VARCHAR(100),option_value TEXT) ENGINE=InnoDB")
-			exec("INSERT INTO `" + prefix + "users` VALUES(1,'alice@example.invalid',0,'never-migrate-passwords'),(2,'banned@example.invalid',-1,'ignored'),(3,'empty@example.invalid',0,'ignored')")
-			exec("INSERT INTO `" + prefix + "players` VALUES(10,1,'Alice',7,8),(11,1,'AltAlice',0,0),(20,2,'Banned',0,0)")
+			exec("INSERT INTO `" + prefix + "users` VALUES(1,'alice@example.invalid',0,'never-migrate-passwords'),(2,'banned@example.invalid',-1,'ignored'),(3,'empty@example.invalid',0,'ignored'),(4,'bob@example.invalid',0,'ignored')")
+			exec("INSERT INTO `" + prefix + "players` VALUES(10,1,'Alice',7,8),(11,1,'AltAlice',0,0),(20,2,'Banned',0,0),(40,4,'Bob',0,0)")
 			data := pngFixture(t, 64, 64)
 			h := sha256.Sum256(data)
 			hash := hex.EncodeToString(h[:])
-			exec("INSERT INTO `"+prefix+"textures` VALUES(7,'alex',?)", hash)
+			exec("INSERT INTO `"+prefix+"textures` VALUES(7,'alex',?,4,1),(9,'steve',?,1,0),(10,'alex',?,1,0),(11,'steve','unused-null-owner',NULL,1),(12,'steve','unused-no-player',3,0),(13,'cape','unused-cape',1,0),(14,'steve','unused-banned',2,0),(15,'steve',?,1,1)", hash, hash, hash, hash)
 			uuid := "12345678-1234-4234-8234-123456789abc"
 			if connect {
 				exec("INSERT INTO `"+prefix+"uuid` VALUES(10,'Alice',?)", uuid)
@@ -96,7 +96,7 @@ func TestMySQLIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(snapshot.Accounts) != 3 || len(snapshot.Players) != 3 || snapshot.UUIDByPID != connect {
+			if len(snapshot.Accounts) != 4 || len(snapshot.Players) != 4 || len(snapshot.Textures) != 8 || snapshot.Textures[7].Uploader != 4 || snapshot.UUIDByPID != connect {
 				t.Fatal("source snapshot mismatch")
 			}
 			dir := t.TempDir()
@@ -119,19 +119,23 @@ func TestMySQLIntegration(t *testing.T) {
 			m[0].Action = "import"
 			m[0].Subject = "subject-alice"
 			m[1].Action = "skip"
+			m[3].Action = "import"
+			m[3].Subject = "subject-bob"
 			plan, err := BuildPlan(snapshot, m, "https://id.example", dir)
 			if err != nil {
 				t.Fatal(err)
 			}
 			target := filepath.Join(dir, "target")
-			if _, err = server.ImportProfiles(ctx, target, plan.Profiles, false); err != nil {
-				t.Fatal(err)
+			result, err := server.ImportProfiles(ctx, target, plan.Profiles, false)
+			if err != nil || result.Added != 2 || result.HistoryAdded != 2 || result.HistoryUnchanged != 1 {
+				t.Fatal("history dry run", result, err)
 			}
 			if _, err = os.Stat(target); !os.IsNotExist(err) {
 				t.Fatal("dry run wrote a target")
 			}
-			if _, err = server.ImportProfiles(ctx, target, plan.Profiles, true); err != nil {
-				t.Fatal(err)
+			result, err = server.ImportProfiles(ctx, target, plan.Profiles, true)
+			if err != nil || result.Added != 2 || result.HistoryAdded != 2 || result.HistoryUnchanged != 1 {
+				t.Fatal("history commit", result, err)
 			}
 			dest, err := sql.Open("sqlite", filepath.Join(target, "atto.db"))
 			if err != nil {
@@ -139,15 +143,25 @@ func TestMySQLIntegration(t *testing.T) {
 			}
 			defer dest.Close()
 			var id, sub, model, skinHash, secret string
-			if err = dest.QueryRow("SELECT id,subject,model,skin_hash,secret_hash FROM users").Scan(&id, &sub, &model, &skinHash, &secret); err != nil {
+			if err = dest.QueryRow("SELECT id,subject,model,skin_hash,secret_hash FROM users WHERE subject='subject-alice'").Scan(&id, &sub, &model, &skinHash, &secret); err != nil {
 				t.Fatal(err)
 			}
 			if id != "12345678123442348234123456789abc" || sub != "subject-alice" || model != "slim" || skinHash != hash || secret != "" {
 				t.Fatal("incorrect migrated profile")
 			}
-			result, err := server.ImportProfiles(ctx, target, plan.Profiles, true)
-			if err != nil || result.Unchanged != 1 {
+			result, err = server.ImportProfiles(ctx, target, plan.Profiles, true)
+			if err != nil || result.Unchanged != 2 || result.HistoryAdded != 0 || result.HistoryUnchanged != 3 {
 				t.Fatal("repeat import", result, err)
+			}
+			var aliceHistory, bobHistory int
+			if err = dest.QueryRow("SELECT count(*) FROM skin_history WHERE user_id=?", id).Scan(&aliceHistory); err != nil {
+				t.Fatal(err)
+			}
+			if err = dest.QueryRow("SELECT count(*) FROM skin_history WHERE user_id=?", offlineUUID("Bob")).Scan(&bobHistory); err != nil {
+				t.Fatal(err)
+			}
+			if aliceHistory != 2 || bobHistory != 1 || plan.HistorySkipped != 3 {
+				t.Fatal("history ownership", aliceHistory, bobHistory, plan.HistorySkipped)
 			}
 			// Confirm source rows and even their password fields remain untouched.
 			var password string

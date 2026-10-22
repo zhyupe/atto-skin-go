@@ -17,7 +17,7 @@
 {{if .Message}}<div class="server-message" id="server-message" role="status">{{.Message}}</div>{{end}}
 <section class="stage {{if not .LoggedIn}}welcome-stage{{end}}" aria-label="皮肤试穿" data-current-hash="{{.User.SkinHash}}" data-current-model="{{.User.Model}}" data-logged-in="{{.LoggedIn}}">
 <div class="player"><span class="micro">{{if .LoggedIn}}我的角色{{else}}Minecraft 皮肤站{{end}}</span><h1>{{if .LoggedIn}}{{.User.Name}}{{else}}你的换装间{{end}}</h1>{{if .LoggedIn}}<a class="text-button" href="#account-panel" data-open="account-panel">角色设置 <span aria-hidden="true">↗</span></a>{{else}}<p class="welcome-copy">一个角色，随时换上喜欢的皮肤。</p>{{end}}</div>
-<div class="stage-label" aria-live="polite"><span class="stage-state">{{if .LoggedIn}}{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}{{else}}示例模型{{end}}</span><span class="muted stage-description">{{if .User.SkinHash}}已经穿在身上{{else}}实际默认外观由游戏决定{{end}}</span></div>
+<div class="stage-label" aria-live="polite"><span class="stage-state">{{if .LoggedIn}}{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}{{else}}示例模型{{end}}</span></div>
 <div class="floor" aria-hidden="true"></div><div class="shadow" aria-hidden="true"></div>
 <canvas id="character" width="740" height="720" aria-label="皮肤预览，可拖动或使用左右方向键旋转" tabindex="0"></canvas>
 <p class="preview-error" id="preview-error" role="status" hidden></p>
@@ -26,7 +26,7 @@
 <div class="selection">
 {{if .LoggedIn}}
 <span class="micro">已选皮肤</span><div class="selection-title"><h2 id="selected-name">{{if .User.SkinHash}}当前皮肤{{else}}默认外观{{end}}</h2><span class="type" id="selected-model">{{if .User.SkinHash}}{{if eq .User.Model "slim"}}纤细 · Alex{{else}}经典 · Steve{{end}}{{else}}尚未设置皮肤{{end}}</span></div>
-<p id="selection-hint">先转一圈，看看新的自己。</p>
+<p id="selection-hint">{{if .User.SkinHash}}先转一圈，看看新的自己。{{else}}实际默认外观由游戏决定。{{end}}</p>
 <button class="primary enhanced-only" id="apply" type="button" disabled>{{if .User.SkinHash}}正在使用{{else}}选择一张皮肤{{end}}</button>
 <a class="download" id="download" {{if .User.SkinHash}}href="/textures/{{.User.SkinHash}}"{{else}}hidden{{end}} download="skin.png">下载 PNG <span aria-hidden="true">↓</span></a>
 <button class="text-button" id="cancel-preview" type="button" hidden>返回当前外观</button>

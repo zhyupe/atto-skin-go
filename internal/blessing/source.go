@@ -22,8 +22,8 @@ type Player struct {
 	Name                     string
 }
 type Texture struct {
-	ID         int64
-	Type, Hash string
+	ID, Uploader int64
+	Type, Hash   string
 }
 type UUIDRecord struct {
 	PID        sql.NullInt64
@@ -106,7 +106,7 @@ func Read(ctx context.Context, db *sql.DB, prefix string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	for table, required := range map[string][]string{"users": {"uid", "email", "permission"}, "players": {"pid", "uid", "tid_skin", "tid_cape"}, "textures": {"tid", "type", "hash"}} {
+	for table, required := range map[string][]string{"users": {"uid", "email", "permission"}, "players": {"pid", "uid", "tid_skin", "tid_cape"}, "textures": {"tid", "type", "hash", "uploader"}} {
 		for _, col := range required {
 			if !columns[prefix+table][col] {
 				return nil, fmt.Errorf("unsupported Blessing schema: missing %s.%s; upgrade old schemas to Blessing Skin 5/6 first", prefix+table, col)
@@ -156,13 +156,13 @@ func Read(ctx context.Context, db *sql.DB, prefix string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err = tx.QueryContext(ctx, "SELECT tid,type,hash FROM "+table("textures")+" WHERE tid IN (SELECT tid_skin FROM "+table("players")+")")
+	rows, err = tx.QueryContext(ctx, "SELECT tid,type,hash,COALESCE(uploader,0) FROM "+table("textures")+" ORDER BY tid")
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var t Texture
-		if err = rows.Scan(&t.ID, &t.Type, &t.Hash); err != nil {
+		if err = rows.Scan(&t.ID, &t.Type, &t.Hash, &t.Uploader); err != nil {
 			rows.Close()
 			return nil, err
 		}

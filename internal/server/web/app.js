@@ -55,8 +55,9 @@
     const same=isCurrent(chosen);
     $('#selected-name').textContent=chosen.title;
     $('#selected-model').textContent=chosen.hash||chosen.kind==='upload'?(chosen.model==='slim'?'纤细 · Alex':'经典 · Steve'):'尚未设置皮肤';
-    $('.stage-state').textContent=same?(chosen.hash?'当前皮肤':'默认外观'):'试穿中';
-    $('.stage-description').textContent=same?(chosen.hash?'已经穿在身上':'实际默认外观由游戏决定'):'尚未更换当前皮肤';
+    $('.stage-state').textContent=same?(chosen.hash?'当前皮肤':'默认外观'):'试穿中 · 未保存';
+    stage.dataset.previewState=same?'saved':'unsaved';
+    $('#selection-hint').textContent=same&&!chosen.hash?'实际默认外观由游戏决定。':'先转一圈，看看新的自己。';
     $('#apply').disabled=busy||same;
     $('#apply').textContent=busy?'正在更换…':same?(chosen.hash?'正在使用':'选择一张皮肤'):'使用此皮肤 ↵';
     $('#cancel-preview').hidden=same;$('#cancel-preview').disabled=busy;

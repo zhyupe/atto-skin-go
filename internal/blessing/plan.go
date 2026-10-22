@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zhyupe/atto-skin-go/internal/server"
@@ -19,6 +20,7 @@ import (
 type Plan struct {
 	Profiles                                                                []server.ImportedProfile
 	Accounts, Players, Skipped, AccountsWithoutPlayers, Skins, CapesOmitted int
+	HistorySkins, HistorySkipped                                            int
 }
 
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -27,6 +29,15 @@ var playerNamePattern = regexp.MustCompile(`^[A-Za-z0-9_]{3,16}$`)
 // BuildPlan requires an explicit import/skip decision for every player. The
 // caller must supply authoritative OIDC subjects; email addresses are not identity keys.
 func BuildPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string) (Plan, error) {
+	return buildPlan(s, mappings, issuer, texturesDir, false)
+}
+
+// BuildHistoryPlan selects only library skins uploaded by the mapped accounts.
+func BuildHistoryPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string) (Plan, error) {
+	return buildPlan(s, mappings, issuer, texturesDir, true)
+}
+
+func buildPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string, historyOnly bool) (Plan, error) {
 	plan := Plan{Accounts: len(s.Accounts), Players: len(s.Players)}
 	cfg := server.Config{BaseURL: "http://localhost", Issuer: issuer, ClientID: "migration", DataDir: "unused"}
 	if err := cfg.Validate(); err != nil {
@@ -56,6 +67,41 @@ func BuildPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string) (Pla
 	}()
 	// At most one copy of each normalized texture is retained in the import plan.
 	textureCache := map[string][]byte{}
+	loadTexture := func(t Texture) (server.ImportedSkin, error) {
+		entry := server.ImportedSkin{Model: "default"}
+		switch t.Type {
+		case "steve":
+		case "alex":
+			entry.Model = "slim"
+		default:
+			return entry, fmt.Errorf("tid %d: unsupported texture type %q", t.ID, t.Type)
+		}
+		if !hashPattern.MatchString(t.Hash) {
+			return entry, fmt.Errorf("tid %d: invalid texture SHA-256", t.ID)
+		}
+		key := t.Hash + ":" + entry.Model
+		data, ok := textureCache[key]
+		if !ok {
+			if texturesDir == "" {
+				return entry, errors.New("-textures-dir is required to import skins; a MySQL dump contains no PNG files")
+			}
+			var err error
+			if root == nil {
+				root, err = os.OpenRoot(texturesDir)
+				if err != nil {
+					return entry, fmt.Errorf("open texture directory: %w", err)
+				}
+			}
+			data, err = readTexture(root, t.Hash, entry.Model)
+			if err != nil {
+				return entry, fmt.Errorf("tid %d: %w", t.ID, err)
+			}
+			textureCache[key] = data
+		}
+		entry.PNG = data
+		return entry, nil
+	}
+	profileByUID := map[int64]int{}
 	for _, m := range mappings {
 		p, ok := players[m.PID]
 		if !ok || p.UID != m.UID || p.Name != m.SourceName {
@@ -107,46 +153,22 @@ func BuildPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string) (Pla
 		if p.CapeID > 0 {
 			plan.CapesOmitted++
 		}
-		if p.SkinID > 0 {
+		if !historyOnly && p.SkinID > 0 {
 			t, ok := s.Textures[p.SkinID]
 			if !ok {
 				return plan, fmt.Errorf("pid %d: skin tid %d is missing from textures", p.PID, p.SkinID)
 			}
-			switch t.Type {
-			case "steve":
-				profile.Model = "default"
-			case "alex":
-				profile.Model = "slim"
-			default:
-				return plan, fmt.Errorf("pid %d: unsupported texture type %q", p.PID, t.Type)
+			entry, err := loadTexture(t)
+			if err != nil {
+				return plan, fmt.Errorf("pid %d: %w", p.PID, err)
 			}
-			if !hashPattern.MatchString(t.Hash) {
-				return plan, fmt.Errorf("pid %d: invalid texture SHA-256", p.PID)
-			}
-			cacheKey := t.Hash + ":" + profile.Model
-			data, ok := textureCache[cacheKey]
-			if !ok {
-				if texturesDir == "" {
-					return plan, errors.New("-textures-dir is required to import assigned skins; a MySQL dump contains no PNG files")
-				}
-				if root == nil {
-					root, err = os.OpenRoot(texturesDir)
-					if err != nil {
-						return plan, fmt.Errorf("open texture directory: %w", err)
-					}
-				}
-				data, err = readTexture(root, t.Hash, profile.Model)
-				if err != nil {
-					return plan, fmt.Errorf("pid %d, tid %d: %w", p.PID, t.ID, err)
-				}
-				textureCache[cacheKey] = data
-			}
-			profile.PNG = data
+			profile.Model, profile.PNG = entry.Model, entry.PNG
 			plan.Skins++
-		} else if p.SkinID < 0 {
+		} else if !historyOnly && p.SkinID < 0 {
 			// -1 is the historical lazy migration sentinel, not a reliably empty skin.
 			return plan, fmt.Errorf("pid %d has legacy tid_skin=%d; run Blessing's schema/data upgrades before importing", p.PID, p.SkinID)
 		}
+		profileByUID[p.UID] = len(plan.Profiles)
 		plan.Profiles = append(plan.Profiles, profile)
 	}
 	if len(seenPID) != len(players) {
@@ -155,6 +177,31 @@ func BuildPlan(s *Snapshot, mappings []Mapping, issuer, texturesDir string) (Pla
 	if len(plan.Profiles) == 0 {
 		return plan, errors.New("no players selected for import")
 	}
+	// Stable traversal makes failures reproducible. Ownership comes only from uploader,
+	// never from player assignments, public visibility or closet favorites.
+	ids := make([]int64, 0, len(s.Textures))
+	for id := range s.Textures {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		texture := s.Textures[id]
+		if texture.Type == "cape" {
+			continue
+		}
+		index, selected := profileByUID[texture.Uploader]
+		if !selected || texture.Uploader <= 0 {
+			plan.HistorySkipped++
+			continue
+		}
+		entry, err := loadTexture(texture)
+		if err != nil {
+			return plan, fmt.Errorf("uploader uid %d: %w", texture.Uploader, err)
+		}
+		plan.Profiles[index].History = append(plan.Profiles[index].History, entry)
+		plan.HistorySkins++
+	}
+
 	return plan, nil
 }
 func readTexture(root *os.Root, hash, model string) ([]byte, error) {

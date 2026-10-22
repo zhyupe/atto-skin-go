@@ -221,3 +221,35 @@ func TestTexturesAreVerifiedAndSanitized(t *testing.T) {
 		t.Fatal("escaped texture root")
 	}
 }
+
+func TestHistoryPlanUsesUploadersAndSkipsAssignments(t *testing.T) {
+	s := fixture()
+	dir := t.TempDir()
+	attachSkin(t, s, dir, pngFixture(t, 64, 64), "alex")
+	uploaded := s.Textures[7]
+	uploaded.Uploader = 1
+	s.Textures[7] = uploaded
+	// No assigned skin is needed to discover an uploader's library.
+	s.Players[0].SkinID = 999
+	s.Textures[8] = Texture{ID: 8, Uploader: 2, Type: "steve", Hash: "missing-banned-skin"}
+	s.Textures[9] = Texture{ID: 9, Uploader: 3, Type: "steve", Hash: "missing-no-player-skin"}
+	s.Textures[10] = Texture{ID: 10, Type: "alex", Hash: "orphan"}
+	s.Textures[11] = Texture{ID: 11, Uploader: 1, Type: "cape", Hash: "missing-cape"}
+	plan, err := BuildHistoryPlan(s, decisions(), "https://id.example", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Skins != 0 || plan.HistorySkins != 1 || plan.HistorySkipped != 3 || len(plan.Profiles[0].History) != 1 || plan.Profiles[0].History[0].Model != "slim" || plan.Profiles[0].PNG != nil {
+		t.Fatal("incorrect uploader history", plan)
+	}
+	if _, err = BuildPlan(s, decisions(), "https://id.example", dir); err == nil {
+		t.Fatal("full import ignored missing assigned skin")
+	}
+	// Owned library files are validated even when they were never assigned.
+	if err = os.Remove(filepath.Join(dir, uploaded.Hash)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = BuildHistoryPlan(s, decisions(), "https://id.example", dir); err == nil {
+		t.Fatal("missing owned history silently omitted")
+	}
+}
