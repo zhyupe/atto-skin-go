@@ -26,13 +26,14 @@ func TestImportDryRunCommitAndIdempotence(t *testing.T) {
 	if err != nil || result.Added != 1 {
 		t.Fatal(result, err)
 	}
-	db, err := openDB(dir)
+	db, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	var id, secret, hash string
-	if err = db.QueryRow("SELECT id,secret_hash,skin_hash FROM users WHERE subject='subject-a'").Scan(&id, &secret, &hash); err != nil {
+	if err = db.QueryRow("SELECT id,secret_hash,skin_hash FROM users WHERE subject='subject-a'").
+		Scan(&id, &secret, &hash); err != nil {
 		t.Fatal(err)
 	}
 	if id != p.ID || secret != "" || hash == "" {
@@ -51,7 +52,7 @@ func TestImportDryRunCommitAndIdempotence(t *testing.T) {
 	}
 	// The normal OIDC login path reuses the migrated identity, rather than creating a user.
 	app := &Server{db: db}
-	u, err := app.ensureUser(p.Issuer, p.Subject)
+	u, err := app.ensureUser(t.Context(), p.Issuer, p.Subject)
 	if err != nil || u.ID != p.ID || u.Name != p.Name {
 		t.Fatal("OIDC did not reuse imported profile", err)
 	}
@@ -84,7 +85,7 @@ func TestImportConflictsRollbackWholeBatch(t *testing.T) {
 					t.Fatal("conflict accepted")
 				}
 			}
-			db, err := openDB(dir)
+			db, err := openDB(t.Context(), dir)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,12 +122,15 @@ func TestImportHistoryBackfillPreservesProfileAndRecency(t *testing.T) {
 	if _, err := ImportProfiles(ctx, dir, []ImportedProfile{p}, true); err != nil {
 		t.Fatal(err)
 	}
-	db, err := openDB(dir)
+	db, err := openDB(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err = db.Exec("UPDATE users SET name='Renamed',skin_hash='',model='slim',secret_hash='keep-secret' WHERE id=?", p.ID); err != nil {
+	if _, err = db.Exec(
+		"UPDATE users SET name='Renamed',skin_hash='',model='slim',secret_hash='keep-secret' WHERE id=?",
+		p.ID,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec("UPDATE skin_history SET last_used=123456 WHERE user_id=?", p.ID); err != nil {
@@ -140,7 +144,8 @@ func TestImportHistoryBackfillPreservesProfileAndRecency(t *testing.T) {
 			t.Fatal(result, err)
 		}
 		var name, hash, model, secret string
-		if err = db.QueryRow("SELECT name,skin_hash,model,secret_hash FROM users WHERE id=?", p.ID).Scan(&name, &hash, &model, &secret); err != nil {
+		if err = db.QueryRow("SELECT name,skin_hash,model,secret_hash FROM users WHERE id=?", p.ID).
+			Scan(&name, &hash, &model, &secret); err != nil {
 			t.Fatal(err)
 		}
 		if name != "Renamed" || hash != "" || model != "slim" || secret != "keep-secret" {
@@ -156,11 +161,15 @@ func TestImportHistoryBackfillPreservesProfileAndRecency(t *testing.T) {
 		if apply && count != 2 {
 			t.Fatal("duplicate history", count)
 		}
-		if err = db.QueryRow("SELECT last_used FROM skin_history WHERE user_id=? AND model='default'", p.ID).Scan(&recency); err != nil || recency != 123456 {
+		if err = db.QueryRow("SELECT last_used FROM skin_history WHERE user_id=? AND model='default'", p.ID).
+			Scan(&recency); err != nil ||
+			recency != 123456 {
 			t.Fatal("changed existing recency", recency, err)
 		}
 		if apply {
-			if err = db.QueryRow("SELECT last_used FROM skin_history WHERE user_id=? AND model='slim'", p.ID).Scan(&recency); err != nil || recency != 0 {
+			if err = db.QueryRow("SELECT last_used FROM skin_history WHERE user_id=? AND model='slim'", p.ID).
+				Scan(&recency); err != nil ||
+				recency != 0 {
 				t.Fatal("backfill marked skin as worn", recency, err)
 			}
 		}
@@ -198,7 +207,7 @@ func TestImportHistoryRejectsIdentityMismatchAndRollsBack(t *testing.T) {
 					t.Fatal("history identity conflict accepted")
 				}
 			}
-			db, err := openDB(dir)
+			db, err := openDB(t.Context(), dir)
 			if err != nil {
 				t.Fatal(err)
 			}

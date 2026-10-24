@@ -9,6 +9,24 @@ concurrency:
 permissions:
   contents: read
 jobs:
+  lint:
+    name: Go conventions and generated SQL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - uses: sqlc-dev/setup-sqlc@bac53b7fb28c039a6c7f5736fd1e89744021bdd6 # v5.0.0
+        with:
+          sqlc-version: '1.31.1'
+      - run: sqlc generate
+      - run: git diff --exit-code -- internal/database/queries
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          args: --timeout=5m
   test:
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +95,7 @@ jobs:
 
   image:
     name: Container image
-    needs: [test, mysql-import, browser]
+    needs: [lint, test, mysql-import, browser]
     if: >-
       github.event_name == 'pull_request' ||
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||

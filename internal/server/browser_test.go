@@ -25,12 +25,12 @@ func TestBrowserWardrobe(t *testing.T) {
 	s, _ := testServer(t)
 	u, _ := seed(t, s, "wardrobe-browser", "Wardrobe")
 	seed(t, s, "wardrobe-conflict", "TakenName")
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		model := "default"
 		if i%2 == 1 {
 			model = "slim"
 		}
-		if err := s.setSkin(u.ID, browserPNG(t, i, 64), model, ""); err != nil {
+		if err := s.setSkin(t.Context(), u.ID, browserPNG(t, i, 64), model, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -70,7 +70,16 @@ func TestBrowserWardrobe(t *testing.T) {
 func browserPNG(t *testing.T, variant, height int) []byte {
 	t.Helper()
 	img := image.NewNRGBA(image.Rect(0, 0, 64, height))
-	palettes := []color.NRGBA{{98, 133, 183, 255}, {182, 104, 98, 255}, {184, 190, 193, 255}, {136, 112, 155, 255}, {73, 93, 108, 255}, {211, 149, 75, 255}, {73, 138, 145, 255}, {167, 121, 74, 255}}
+	palettes := []color.NRGBA{
+		{98, 133, 183, 255},
+		{182, 104, 98, 255},
+		{184, 190, 193, 255},
+		{136, 112, 155, 255},
+		{73, 93, 108, 255},
+		{211, 149, 75, 255},
+		{73, 138, 145, 255},
+		{167, 121, 74, 255},
+	}
 	fill := func(x, y, w, h int, c color.NRGBA) {
 		draw.Draw(img, image.Rect(x, y, x+w, y+h), &image.Uniform{C: c}, image.Point{}, draw.Src)
 	}

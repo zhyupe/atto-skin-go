@@ -16,14 +16,31 @@ import (
 
 func fixture() *Snapshot {
 	return &Snapshot{
-		Accounts: map[int64]Account{1: {UID: 1, Email: "alice@example.invalid"}, 2: {UID: 2, Permission: -1}, 3: {UID: 3}},
-		Players:  []Player{{PID: 10, UID: 1, Name: "Alice"}, {PID: 11, UID: 1, Name: "AltAlice"}, {PID: 20, UID: 2, Name: "Banned"}},
-		Textures: map[int64]Texture{}, Algorithm: "v3",
+		Accounts: map[int64]Account{
+			1: {UID: 1, Email: "alice@example.invalid"},
+			2: {UID: 2, Permission: -1},
+			3: {UID: 3},
+		},
+		Players: []Player{
+			{PID: 10, UID: 1, Name: "Alice"},
+			{PID: 11, UID: 1, Name: "AltAlice"},
+			{PID: 20, UID: 2, Name: "Banned"},
+		},
+		Textures:  map[int64]Texture{},
+		Algorithm: "v3",
 	}
 }
 func decisions() []Mapping {
 	return []Mapping{
-		{Action: "import", UID: 1, PID: 10, SourceName: "Alice", UUID: offlineUUID("Alice"), Subject: "oidc-sub-alice", Name: "Alice"},
+		{
+			Action:     "import",
+			UID:        1,
+			PID:        10,
+			SourceName: "Alice",
+			UUID:       offlineUUID("Alice"),
+			Subject:    "oidc-sub-alice",
+			Name:       "Alice",
+		},
 		{Action: "skip", UID: 1, PID: 11, SourceName: "AltAlice"},
 		{Action: "skip", UID: 2, PID: 20, SourceName: "Banned"},
 	}
@@ -109,7 +126,8 @@ func TestTemplateAndDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Profiles) != 1 || plan.Skipped != 2 || plan.AccountsWithoutPlayers != 1 || plan.Profiles[0].ID != offlineUUID("Alice") {
+	if len(plan.Profiles) != 1 || plan.Skipped != 2 || plan.AccountsWithoutPlayers != 1 ||
+		plan.Profiles[0].ID != offlineUUID("Alice") {
 		t.Fatal("incorrect plan", plan)
 	}
 	m[0].Name = "NewName"
@@ -135,20 +153,20 @@ func TestTemplateAndDecisions(t *testing.T) {
 }
 func TestMappingRejectsAmbiguity(t *testing.T) {
 	cases := map[string]func(*Snapshot, []Mapping) []Mapping{
-		"two-players": func(s *Snapshot, m []Mapping) []Mapping {
+		"two-players": func(_ *Snapshot, m []Mapping) []Mapping {
 			m[1].Action = "import"
 			m[1].Subject = "other"
 			m[1].UUID = offlineUUID("AltAlice")
 			m[1].Name = "AltAlice"
 			return m
 		},
-		"missing-decision":    func(s *Snapshot, m []Mapping) []Mapping { return m[:2] },
-		"duplicate-pid":       func(s *Snapshot, m []Mapping) []Mapping { return append(m, m[0]) },
-		"changed-owner":       func(s *Snapshot, m []Mapping) []Mapping { m[0].UID = 5; return m },
-		"changed-source-name": func(s *Snapshot, m []Mapping) []Mapping { m[0].SourceName = "Changed"; return m },
-		"missing-sub":         func(s *Snapshot, m []Mapping) []Mapping { m[0].Subject = ""; return m },
-		"bad-name":            func(s *Snapshot, m []Mapping) []Mapping { m[0].Name = "invalid name"; return m },
-		"changed-uuid":        func(s *Snapshot, m []Mapping) []Mapping { m[0].UUID = offlineUUID("Other"); return m },
+		"missing-decision":    func(_ *Snapshot, m []Mapping) []Mapping { return m[:2] },
+		"duplicate-pid":       func(_ *Snapshot, m []Mapping) []Mapping { return append(m, m[0]) },
+		"changed-owner":       func(_ *Snapshot, m []Mapping) []Mapping { m[0].UID = 5; return m },
+		"changed-source-name": func(_ *Snapshot, m []Mapping) []Mapping { m[0].SourceName = "Changed"; return m },
+		"missing-sub":         func(_ *Snapshot, m []Mapping) []Mapping { m[0].Subject = ""; return m },
+		"bad-name":            func(_ *Snapshot, m []Mapping) []Mapping { m[0].Name = "invalid name"; return m },
+		"changed-uuid":        func(_ *Snapshot, m []Mapping) []Mapping { m[0].UUID = offlineUUID("Other"); return m },
 		"banned": func(s *Snapshot, m []Mapping) []Mapping {
 			a := s.Accounts[1]
 			a.Permission = -1
@@ -186,7 +204,8 @@ func TestTexturesAreVerifiedAndSanitized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Skins != 1 || plan.CapesOmitted != 1 || plan.Profiles[0].Model != "slim" || !bytes.Equal(plan.Profiles[0].PNG, original) {
+	if plan.Skins != 1 || plan.CapesOmitted != 1 || plan.Profiles[0].Model != "slim" ||
+		!bytes.Equal(plan.Profiles[0].PNG, original) {
 		t.Fatal("texture was not canonicalized")
 	}
 	texture := s.Textures[7]
@@ -239,7 +258,9 @@ func TestHistoryPlanUsesUploadersAndSkipsAssignments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Skins != 0 || plan.HistorySkins != 1 || plan.HistorySkipped != 3 || len(plan.Profiles[0].History) != 1 || plan.Profiles[0].History[0].Model != "slim" || plan.Profiles[0].PNG != nil {
+	if plan.Skins != 0 || plan.HistorySkins != 1 || plan.HistorySkipped != 3 || len(plan.Profiles[0].History) != 1 ||
+		plan.Profiles[0].History[0].Model != "slim" ||
+		plan.Profiles[0].PNG != nil {
 		t.Fatal("incorrect uploader history", plan)
 	}
 	if _, err = BuildPlan(s, decisions(), "https://id.example", dir); err == nil {

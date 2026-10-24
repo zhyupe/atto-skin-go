@@ -12,16 +12,17 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,9 +49,38 @@ func newProvider(t *testing.T) *fakeOIDC {
 	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
-			jsonResponse(w, 200, map[string]any{"issuer": p.server.URL, "authorization_endpoint": p.server.URL + "/authorize", "token_endpoint": p.server.URL + "/token", "jwks_uri": p.server.URL + "/keys", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}, "token_endpoint_auth_methods_supported": []string{"client_secret_basic"}, "code_challenge_methods_supported": []string{"S256"}})
+			jsonResponse(
+				w,
+				200,
+				map[string]any{
+					"issuer":                                p.server.URL,
+					"authorization_endpoint":                p.server.URL + "/authorize",
+					"token_endpoint":                        p.server.URL + "/token",
+					"jwks_uri":                              p.server.URL + "/keys",
+					"response_types_supported":              []string{"code"},
+					"subject_types_supported":               []string{"public"},
+					"id_token_signing_alg_values_supported": []string{"RS256"},
+					"token_endpoint_auth_methods_supported": []string{"client_secret_basic"},
+					"code_challenge_methods_supported":      []string{"S256"},
+				},
+			)
 		case "/keys":
-			jsonResponse(w, 200, map[string]any{"keys": []any{map[string]any{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "test", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB"}}})
+			jsonResponse(
+				w,
+				200,
+				map[string]any{
+					"keys": []any{
+						map[string]any{
+							"kty": "RSA",
+							"use": "sig",
+							"alg": "RS256",
+							"kid": "test",
+							"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+							"e":   "AQAB",
+						},
+					},
+				},
+			)
 		case "/token":
 			p.mu.Lock()
 			defer p.mu.Unlock()
@@ -58,14 +88,22 @@ func newProvider(t *testing.T) *fakeOIDC {
 			_ = r.ParseForm()
 			id, secret, ok := r.BasicAuth()
 			hash := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
-			if !ok || id != "atto" || secret != "secret" || r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "valid-code" || r.Form.Get("redirect_uri") != "http://localhost:8080/auth/callback" || base64.RawURLEncoding.EncodeToString(hash[:]) != p.challenge {
+			if !ok || id != "atto" || secret != "secret" || r.Form.Get("grant_type") != "authorization_code" ||
+				r.Form.Get("code") != "valid-code" ||
+				r.Form.Get("redirect_uri") != "http://localhost:8080/auth/callback" ||
+				base64.RawURLEncoding.EncodeToString(hash[:]) != p.challenge {
 				jsonResponse(w, 400, map[string]string{"error": "invalid_grant"})
 				return
 			}
-			claims := map[string]any{"iss": p.server.URL, "sub": "subject-1", "aud": "atto", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": p.nonce}
-			for k, v := range p.overrides {
-				claims[k] = v
+			claims := map[string]any{
+				"iss":   p.server.URL,
+				"sub":   "subject-1",
+				"aud":   "atto",
+				"exp":   time.Now().Add(time.Hour).Unix(),
+				"iat":   time.Now().Unix(),
+				"nonce": p.nonce,
 			}
+			maps.Copy(claims, p.overrides)
 			header, _ := json.Marshal(map[string]string{"alg": "RS256", "kid": "test"})
 			body, _ := json.Marshal(claims)
 			unsigned := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(body)
@@ -73,13 +111,22 @@ func newProvider(t *testing.T) *fakeOIDC {
 			sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h[:])
 			if err != nil {
 				t.Error(err)
-				http.Error(w, "sign", 500)
+				http.Error(w, "sign", http.StatusInternalServerError)
 				return
 			}
 			if p.badSignature {
 				sig[0] ^= 255
 			}
-			jsonResponse(w, 200, map[string]any{"access_token": "provider-access", "token_type": "Bearer", "expires_in": 3600, "id_token": unsigned + "." + base64.RawURLEncoding.EncodeToString(sig)})
+			jsonResponse(
+				w,
+				200,
+				map[string]any{
+					"access_token": "provider-access",
+					"token_type":   "Bearer",
+					"expires_in":   3600,
+					"id_token":     unsigned + "." + base64.RawURLEncoding.EncodeToString(sig),
+				},
+			)
 		default:
 			http.NotFound(w, r)
 		}
@@ -90,14 +137,30 @@ func newProvider(t *testing.T) *fakeOIDC {
 func testServer(t *testing.T) (*Server, *fakeOIDC) {
 	t.Helper()
 	p := newProvider(t)
-	s, err := New(context.Background(), Config{BaseURL: "http://localhost:8080", DataDir: t.TempDir(), Issuer: p.server.URL, ClientID: "atto", ClientSecret: "secret"})
+	s, err := New(
+		context.Background(),
+		Config{
+			BaseURL:      "http://localhost:8080",
+			DataDir:      t.TempDir(),
+			Issuer:       p.server.URL,
+			ClientID:     "atto",
+			ClientSecret: "secret",
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s, p
 }
-func request(s *Server, method, path string, body io.Reader, cookie *http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
+
+func request(
+	s *Server,
+	method, path string,
+	body io.Reader,
+	cookie *http.Cookie,
+	headers map[string]string,
+) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "http://localhost:8080"+path, body)
 	r.RemoteAddr = "192.0.2.1:1234"
 	if cookie != nil {
@@ -130,15 +193,15 @@ func unmarshal[T any](t *testing.T, w *httptest.ResponseRecorder) T {
 }
 func seed(t *testing.T, s *Server, subject, name string) (user, string) {
 	t.Helper()
-	u, err := s.ensureUser(s.cfg.Issuer, subject)
+	u, err := s.ensureUser(t.Context(), s.cfg.Issuer, subject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := randomHex(32)
+	key := randomHex()
 	if _, err = s.db.Exec("UPDATE users SET name=?,secret_hash=? WHERE id=?", name, digest(key), u.ID); err != nil {
 		t.Fatal(err)
 	}
-	u, err = s.userByID(u.ID)
+	u, err = s.userByID(t.Context(), u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,19 +209,42 @@ func seed(t *testing.T, s *Server, subject, name string) (user, string) {
 }
 func browser(t *testing.T, s *Server, u user) (*http.Cookie, string) {
 	t.Helper()
-	raw, csrf := randomHex(32), randomHex(32)
-	_, err := s.db.Exec("INSERT INTO web_sessions VALUES(?,?,?,?)", digest(raw), u.ID, csrf, time.Now().Add(time.Hour).Unix())
+	raw, csrf := randomHex(), randomHex()
+	_, err := s.db.Exec(
+		"INSERT INTO web_sessions VALUES(?,?,?,?)",
+		digest(raw),
+		u.ID,
+		csrf,
+		time.Now().Add(time.Hour).Unix(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &http.Cookie{Name: "atto_session", Value: raw}, csrf
 }
 func formReq(s *Server, path string, v url.Values, cookie *http.Cookie) *httptest.ResponseRecorder {
-	return request(s, "POST", path, strings.NewReader(v.Encode()), cookie, map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": s.cfg.BaseURL})
+	return request(
+		s,
+		"POST",
+		path,
+		strings.NewReader(v.Encode()),
+		cookie,
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": s.cfg.BaseURL},
+	)
 }
 func loginGame(t *testing.T, s *Server, name, key, client string) map[string]any {
 	t.Helper()
-	w := jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]any{"username": name, "password": key, "clientToken": client, "requestUser": true, "agent": map[string]any{"name": "Minecraft", "version": 1}})
+	w := jsonReq(
+		s,
+		"/api/yggdrasil/authserver/authenticate",
+		map[string]any{
+			"username":    name,
+			"password":    key,
+			"clientToken": client,
+			"requestUser": true,
+			"agent":       map[string]any{"name": "Minecraft", "version": 1},
+		},
+	)
 	expect(t, w, 200)
 	return unmarshal[map[string]any](t, w)
 }
@@ -184,7 +270,7 @@ func beginOIDC(t *testing.T, s *Server, p *fakeOIDC) (*http.Cookie, string) {
 func TestOIDCLoginAndIdentity(t *testing.T) {
 	s, p := testServer(t)
 	var firstID string
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		cookie, state := beginOIDC(t, s, p)
 		w := request(s, "GET", "/auth/callback?code=valid-code&state="+state, nil, cookie, nil)
 		expect(t, w, 303)
@@ -219,7 +305,7 @@ func TestOIDCLoginAndIdentity(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("created %d users", count)
 	}
-	other, err := s.ensureUser("https://different.example", "subject-1")
+	other, err := s.ensureUser(t.Context(), "https://different.example", "subject-1")
 	if err != nil || other.ID == firstID {
 		t.Fatal("issuer must scope subject")
 	}
@@ -271,22 +357,109 @@ func TestTokenLifecycleAndSessionProof(t *testing.T) {
 	}
 	raw := v["accessToken"].(string)
 	validate := func(token, client string, intended int) {
-		expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": token, "clientToken": client}), intended)
+		expect(
+			t,
+			jsonReq(
+				s,
+				"/api/yggdrasil/authserver/validate",
+				map[string]string{"accessToken": token, "clientToken": client},
+			),
+			intended,
+		)
 	}
 	validate(raw, "wrong", 403)
 	validate(raw, "client", 204)
-	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": newUUID(), "serverId": "abc"}), 403)
-	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "abc"}), 204)
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=wrong", nil, nil, nil), 204)
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.2", nil, nil, nil), 204)
-	w := request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.1", nil, nil, nil)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/sessionserver/session/minecraft/join",
+			map[string]string{"accessToken": raw, "selectedProfile": newUUID(), "serverId": "abc"},
+		),
+		403,
+	)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/sessionserver/session/minecraft/join",
+			map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "abc"},
+		),
+		204,
+	)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=wrong",
+			nil,
+			nil,
+			nil,
+		),
+		204,
+	)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.2",
+			nil,
+			nil,
+			nil,
+		),
+		204,
+	)
+	w := request(
+		s,
+		"GET",
+		"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=192.0.2.1",
+		nil,
+		nil,
+		nil,
+	)
 	expect(t, w, 200)
 	verifyProfile(t, s, unmarshal[profile](t, w))
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=::ffff:192.0.2.1", nil, nil, nil), 200)
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=invalid", nil, nil, nil), 204)
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw, "clientToken": "wrong"}), 403)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=::ffff:192.0.2.1",
+			nil,
+			nil,
+			nil,
+		),
+		200,
+	)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc&ip=invalid",
+			nil,
+			nil,
+			nil,
+		),
+		204,
+	)
+	expect(
+		t,
+		jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw, "clientToken": "wrong"}),
+		403,
+	)
 	validate(raw, "client", 204)
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]any{"accessToken": raw, "selectedProfile": basicProfile(u)}), 400)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/authserver/refresh",
+			map[string]any{"accessToken": raw, "selectedProfile": basicProfile(u)},
+		),
+		400,
+	)
 	validate(raw, "client", 204)
 	w = jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw})
 	expect(t, w, 200)
@@ -297,13 +470,36 @@ func TestTokenLifecycleAndSessionProof(t *testing.T) {
 	}
 	validate(raw, "client", 403)
 	validate(fresh, "client", 204)
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc", nil, nil, nil), 204)
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/invalidate", map[string]string{"accessToken": fresh, "clientToken": "ignored"}), 204)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=abc",
+			nil,
+			nil,
+			nil,
+		),
+		204,
+	)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/authserver/invalidate",
+			map[string]string{"accessToken": fresh, "clientToken": "ignored"},
+		),
+		204,
+	)
 	validate(fresh, "client", 403)
 	expect(t, jsonReq(s, "/api/yggdrasil/authserver/invalidate", map[string]string{"accessToken": "missing"}), 204)
 	a := loginGame(t, s, "Alice", key, "a")["accessToken"].(string)
 	b := loginGame(t, s, "Alice", key, "b")["accessToken"].(string)
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "Alice", "password": key}), 204)
+	expect(
+		t,
+		jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "Alice", "password": key}),
+		204,
+	)
 	validate(a, "a", 403)
 	validate(b, "b", 403)
 }
@@ -326,12 +522,10 @@ func TestConcurrentRefreshAndTokenLimit(t *testing.T) {
 	raw := loginGame(t, s, "Alice", key, "c")["accessToken"].(string)
 	var wg sync.WaitGroup
 	statuses := make(chan int, 8)
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			statuses <- jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}).Code
-		}()
+		})
 	}
 	wg.Wait()
 	close(statuses)
@@ -346,8 +540,8 @@ func TestConcurrentRefreshAndTokenLimit(t *testing.T) {
 	if successes != 1 {
 		t.Fatalf("%d refreshes succeeded", successes)
 	}
-	for i := 0; i < 12; i++ {
-		loginGame(t, s, "Alice", key, fmt.Sprint(i))
+	for i := range 12 {
+		loginGame(t, s, "Alice", key, strconv.Itoa(i))
 	}
 	var count int
 	s.db.QueryRow("SELECT count(*) FROM tokens").Scan(&count)
@@ -365,7 +559,7 @@ func TestRenameCSRFAndKeyRotation(t *testing.T) {
 	expect(t, formReq(s, "/account/profile", url.Values{"name": {"bob"}, "csrf": {csrf}}, cookie), 409)
 	expect(t, formReq(s, "/account/profile", url.Values{"name": {"bad name"}, "csrf": {csrf}}, cookie), 400)
 	expect(t, formReq(s, "/account/profile", url.Values{"name": {"NewAlice"}, "csrf": {csrf}}, cookie), 303)
-	renamed, err := s.userByName("NewAlice")
+	renamed, err := s.userByName(t.Context(), "NewAlice")
 	if err != nil || renamed.ID != u.ID {
 		t.Fatal("rename changed UUID")
 	}
@@ -379,7 +573,15 @@ func TestRenameCSRFAndKeyRotation(t *testing.T) {
 	raw = token["accessToken"].(string)
 	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 200)
 	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]string{"username": "NewAlice", "password": key}), 403)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/authserver/authenticate",
+			map[string]string{"username": "NewAlice", "password": key},
+		),
+		403,
+	)
 	expect(t, formReq(s, "/auth/logout", url.Values{"csrf": {csrf}}, cookie), 303)
 	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 401)
 }
@@ -428,17 +630,36 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 	original := pngData(t, 64, 64)
 	withJunk := append(append([]byte{}, original...), []byte("injected-metadata")...)
 	expect(t, upload(path, withJunk, "slim"), 204)
-	u, _ = s.userByID(u.ID)
+	u, _ = s.userByID(t.Context(), u.ID)
 	w := request(s, "GET", "/textures/"+u.SkinHash, nil, nil, nil)
 	expect(t, w, 200)
 	if !bytes.Equal(w.Body.Bytes(), original) || bytes.Contains(w.Body.Bytes(), []byte("injected")) {
 		t.Fatal("not canonical PNG")
 	}
-	if w.Header().Get("Content-Type") != "image/png" || !strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
+	if w.Header().Get("Content-Type") != "image/png" ||
+		!strings.Contains(w.Header().Get("Cache-Control"), "immutable") {
 		t.Fatal("bad texture headers")
 	}
-	expect(t, request(s, "GET", "/textures/"+u.SkinHash, nil, nil, map[string]string{"If-None-Match": w.Header().Get("ETag")}), 304)
-	w = request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false", nil, nil, nil)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/textures/"+u.SkinHash,
+			nil,
+			nil,
+			map[string]string{"If-None-Match": w.Header().Get("ETag")},
+		),
+		304,
+	)
+	w = request(
+		s,
+		"GET",
+		"/api/yggdrasil/sessionserver/session/minecraft/profile/"+u.ID+"?unsigned=false",
+		nil,
+		nil,
+		nil,
+	)
 	expect(t, w, 200)
 	p := unmarshal[profile](t, w)
 	verifyProfile(t, s, p)
@@ -455,14 +676,18 @@ func TestSkinUploadAndSignatures(t *testing.T) {
 		t.Fatal("unsigned default")
 	}
 	expect(t, request(s, "DELETE", path, nil, nil, map[string]string{"Authorization": "Bearer " + raw}), 204)
-	u, _ = s.userByID(u.ID)
+	u, _ = s.userByID(t.Context(), u.ID)
 	if u.SkinHash != "" {
 		t.Fatal("skin not deleted")
 	}
 	cookie, csrf := browser(t, s, u)
 	b, ct := multipartBody(t, pngData(t, 64, 32), "default", csrf)
-	expect(t, request(s, "POST", "/account/skin", b, cookie, map[string]string{"Content-Type": ct, "Origin": s.cfg.BaseURL}), 303)
-	u, _ = s.userByID(u.ID)
+	expect(
+		t,
+		request(s, "POST", "/account/skin", b, cookie, map[string]string{"Content-Type": ct, "Origin": s.cfg.BaseURL}),
+		303,
+	)
+	u, _ = s.userByID(t.Context(), u.ID)
 	if u.SkinHash == "" {
 		t.Fatal("web upload missing")
 	}
@@ -484,25 +709,44 @@ func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 	if err != nil || pub.(*rsa.PublicKey).N.Cmp(s.key.N) != 0 {
 		t.Fatal("wrong public key")
 	}
-	reopened, err := openDB(s.cfg.DataDir)
+	reopened, err := openDB(t.Context(), s.cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	persisted, err := loadKey(reopened)
+	persisted, err := loadKey(t.Context(), reopened)
 	if err != nil || persisted.N.Cmp(s.key.N) != 0 {
 		t.Fatal("key not persistent")
 	}
 	raw := loginGame(t, s, "Alice", key, "c")["accessToken"].(string)
-	expect(t, jsonReq(s, "/api/yggdrasil/sessionserver/session/minecraft/join", map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "x"}), 204)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/sessionserver/session/minecraft/join",
+			map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "x"},
+		),
+		204,
+	)
 	s.db.Exec("UPDATE joins SET expires=0")
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=x", nil, nil, nil), 204)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=x",
+			nil,
+			nil,
+			nil,
+		),
+		204,
+	)
 	s.db.Exec("UPDATE tokens SET expires=0")
 	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}), 403)
-	if err = s.cleanup(); err != nil {
+	if err = s.cleanup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
 	req.Header.Set("X-Real-IP", "203.0.113.2")
 	if s.clientIP(req) != "192.0.2.1" {
@@ -513,28 +757,60 @@ func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 		t.Fatal("trusted proxy not honored")
 	}
 	expect(t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}), 200)
-	profiles := unmarshal[[]profile](t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}))
+	profiles := unmarshal[[]profile](
+		t,
+		jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", []string{"ALICE", "Alice", "missing"}),
+	)
 	if len(profiles) != 1 {
 		t.Fatal("lookup deduplication")
 	}
 	expect(t, jsonReq(s, "/api/yggdrasil/api/profiles/minecraft", make([]string, 101)), 400)
-	expect(t, request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+newUUID(), nil, nil, nil), 204)
+	expect(
+		t,
+		request(s, "GET", "/api/yggdrasil/sessionserver/session/minecraft/profile/"+newUUID(), nil, nil, nil),
+		204,
+	)
 }
 func TestRequestLimitsAndBrowserProtection(t *testing.T) {
 	s, _ := testServer(t)
 	u, _ := seed(t, s, "a", "Alice")
 	cookie, csrf := browser(t, s, u)
-	expect(t, request(s, "POST", "/account/profile", strings.NewReader(url.Values{"name": {"Changed"}, "csrf": {csrf}}.Encode()), cookie, map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://evil.example"}), 403)
+	expect(
+		t,
+		request(
+			s,
+			"POST",
+			"/account/profile",
+			strings.NewReader(url.Values{"name": {"Changed"}, "csrf": {csrf}}.Encode()),
+			cookie,
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://evil.example"},
+		),
+		403,
+	)
 	for _, input := range []string{"{", "{}{}", strings.Repeat("x", 70<<10)} {
 		expect(t, request(s, "POST", "/api/yggdrasil/authserver/authenticate", strings.NewReader(input), nil, nil), 400)
 	}
-	for i := 0; i < 20; i++ {
-		expect(t, jsonReq(s, "/api/yggdrasil/authserver/authenticate", map[string]string{"username": "Alice", "password": "bad"}), 403)
+	for range 20 {
+		expect(
+			t,
+			jsonReq(
+				s,
+				"/api/yggdrasil/authserver/authenticate",
+				map[string]string{"username": "Alice", "password": "bad"},
+			),
+			403,
+		)
 	}
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "alice", "password": "bad"}), 429)
+	expect(
+		t,
+		jsonReq(s, "/api/yggdrasil/authserver/signout", map[string]string{"username": "alice", "password": "bad"}),
+		429,
+	)
 	w := request(s, "GET", "/", nil, nil, nil)
 	expect(t, w, 200)
-	if w.Header().Get("X-Authlib-Injector-API-Location") != s.cfg.BaseURL+"/api/yggdrasil/" || w.Header().Get("Content-Security-Policy") == "" || w.Header().Get("Referrer-Policy") != "same-origin" {
+	if w.Header().Get("X-Authlib-Injector-Api-Location") != s.cfg.BaseURL+"/api/yggdrasil/" ||
+		w.Header().Get("Content-Security-Policy") == "" ||
+		w.Header().Get("Referrer-Policy") != "same-origin" {
 		t.Fatal("missing security/discovery headers")
 	}
 	s.db.Exec("UPDATE web_sessions SET expires=0")
@@ -558,7 +834,7 @@ func TestRenameUsesCurrentNameDuringConcurrentRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := loginGame(t, s, "Renamed", key, "client")["accessToken"].(string)
-	r := httptest.NewRequest("POST", "/account/profile", strings.NewReader("name=Alice"))
+	r := httptest.NewRequest(http.MethodPost, "/account/profile", strings.NewReader("name=Alice"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if err := r.ParseForm(); err != nil {
 		t.Fatal(err)

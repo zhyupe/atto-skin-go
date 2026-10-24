@@ -2,11 +2,16 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/zhyupe/atto-skin-go/internal/database/queries"
 
 	"github.com/zhyupe/atto-skin-go/internal/skin"
 )
@@ -14,7 +19,7 @@ import (
 func readSkin(r *http.Request) ([]byte, string, error) {
 	model := r.FormValue("model")
 	if model == "" {
-		model = "default"
+		model = defaultModel
 	}
 	f, _, err := r.FormFile("file")
 	if err != nil {
@@ -22,64 +27,71 @@ func readSkin(r *http.Request) ([]byte, string, error) {
 	}
 	defer f.Close()
 	data, err := skin.Normalize(f, model)
-	return data, model, err
-}
-func (s *Server) setSkin(uid string, data []byte, model, tokenHash string) error {
-	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return data, model, fmt.Errorf("read skin: %w", err)
 	}
-	defer tx.Rollback()
+	return data, model, nil
+}
+func (s *Server) setSkin(ctx context.Context, uid string, data []byte, model, tokenHash string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set skin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	if tokenHash != "" {
 		var id string
-		if err = tx.QueryRow("SELECT user_id FROM tokens WHERE hash=? AND user_id=? AND expires>? AND stale=0", tokenHash, uid, time.Now().Unix()).Scan(&id); err != nil {
-			return err
+		if err = tx.QueryRowContext(ctx, queries.RequireSkinToken, tokenHash, uid, time.Now().Unix()).
+			Scan(&id); err != nil {
+			return fmt.Errorf("set skin: %w", err)
 		}
 	}
 	// Preserve the previous selection even for profiles imported by older releases.
-	if _, err = tx.Exec(`INSERT OR IGNORE INTO skin_history(user_id,skin_hash,model,last_used)
- SELECT id,skin_hash,model,0 FROM users WHERE id=? AND skin_hash != ''`, uid); err != nil {
-		return err
+	if _, err = queries.New(tx).ArchiveCurrentSkin(ctx, uid); err != nil {
+		return fmt.Errorf("set skin: %w", err)
 	}
 	hash := ""
 	if data != nil {
 		hash = digest(string(data))
-		if _, err = tx.Exec("INSERT OR IGNORE INTO textures(hash,png) VALUES(?,?)", hash, data); err != nil {
-			return err
+		if _, err = queries.New(tx).PutTexture(ctx, queries.PutTextureParams{Hash: hash, Png: data}); err != nil {
+			return fmt.Errorf("set skin: %w", err)
 		}
 	}
 	if hash != "" {
-		if err = rememberSkin(tx, uid, hash, model); err != nil {
-			return err
+		if err = rememberSkin(ctx, tx, uid, hash, model); err != nil {
+			return fmt.Errorf("set skin: %w", err)
 		}
 	}
-	if _, err = tx.Exec("UPDATE users SET skin_hash=?,model=? WHERE id=?", hash, model, uid); err != nil {
-		return err
+	if _, err = queries.New(tx).
+		SetUserSkin(ctx, queries.SetUserSkinParams{SkinHash: hash, Model: model, ID: uid}); err != nil {
+		return fmt.Errorf("set skin: %w", err)
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("set skin: %w", err)
+	}
+	return nil
 }
 func (s *Server) uploadWeb(w http.ResponseWriter, r *http.Request, v session) {
 	if !s.allow("upload:"+v.User.ID, 20) {
-		http.Error(w, "上传过于频繁，请稍后重试。", 429)
+		http.Error(w, "上传过于频繁，请稍后重试。", http.StatusTooManyRequests)
 		return
 	}
 	data, model, err := readSkin(r)
 	if err != nil {
-		s.render(w, v, err.Error(), "", 400)
+		s.render(r.Context(), w, v, err.Error(), "", 400)
 		return
 	}
-	if err = s.setSkin(v.User.ID, data, model, ""); err != nil {
-		internalError(w, err)
+	if err = s.setSkin(r.Context(), v.User.ID, data, model, ""); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
-	http.Redirect(w, r, "/?saved=skin", 303)
+	http.Redirect(w, r, "/?saved=skin", http.StatusSeeOther)
 }
 func (s *Server) deleteWeb(w http.ResponseWriter, r *http.Request, v session) {
-	if err := s.setSkin(v.User.ID, nil, "default", ""); err != nil {
-		internalError(w, err)
+	if err := s.setSkin(r.Context(), v.User.ID, nil, defaultModel, ""); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
-	http.Redirect(w, r, "/?saved=removed", 303)
+	http.Redirect(w, r, "/?saved=removed", http.StatusSeeOther)
 }
 func (s *Server) uploadProtocol(w http.ResponseWriter, r *http.Request) {
 	auth := r.Header.Get("Authorization")
@@ -87,20 +99,20 @@ func (s *Server) uploadProtocol(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 401, "Unauthorized", "Bearer token required.")
 		return
 	}
-	t, err := s.lookupToken(strings.TrimPrefix(auth, "Bearer "), nil, false)
-	if err == sql.ErrNoRows {
+	t, err := s.lookupToken(r.Context(), strings.TrimPrefix(auth, "Bearer "), nil, false)
+	if errors.Is(err, sql.ErrNoRows) {
 		apiError(w, 401, "Unauthorized", "Invalid token.")
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	if t.UserID != r.PathValue("uuid") {
 		forbidden(w)
 		return
 	}
-	if r.PathValue("kind") != "skin" {
+	if r.PathValue("kind") != skinKind {
 		apiError(w, 400, "IllegalArgumentException", "Only skin textures are supported.")
 		return
 	}
@@ -109,28 +121,28 @@ func (s *Server) uploadProtocol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var data []byte
-	model := "default"
+	model := defaultModel
 	if r.Method == http.MethodPut {
 		r.Body = http.MaxBytesReader(w, r.Body, (1<<20)+65536)
 		if err = r.ParseMultipartForm(1 << 20); err != nil {
 			apiError(w, 400, "IllegalArgumentException", "Invalid or oversized multipart form.")
 			return
 		}
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 		data, model, err = readSkin(r)
 		if err != nil {
 			apiError(w, 400, "IllegalArgumentException", err.Error())
 			return
 		}
 	}
-	if err = s.setSkin(t.UserID, data, model, t.Hash); err == sql.ErrNoRows {
+	if err = s.setSkin(r.Context(), t.UserID, data, model, t.Hash); errors.Is(err, sql.ErrNoRows) {
 		apiError(w, 401, "Unauthorized", "Invalid token.")
 		return
 	} else if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -142,13 +154,13 @@ func (s *Server) texture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var data []byte
-	err := s.db.QueryRow("SELECT png FROM textures WHERE hash=?", hash).Scan(&data)
-	if err == sql.ErrNoRows {
+	err := s.db.QueryRowContext(r.Context(), queries.GetTexture, hash).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")

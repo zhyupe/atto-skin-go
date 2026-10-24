@@ -1,9 +1,8 @@
-// atto-import-blessing reads MySQL and local PNGs, then imports explicitly mapped OIDC profiles.
+// atto-import-blessing imports mapped OIDC profiles from a read-only Blessing snapshot.
 package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,102 +10,166 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
 	"github.com/zhyupe/atto-skin-go/internal/blessing"
+	"github.com/zhyupe/atto-skin-go/internal/command"
 	"github.com/zhyupe/atto-skin-go/internal/server"
 )
 
+type importOptions struct {
+	dsnEnv, prefix, export, mapping, issuer, textures, dataDir string
+	apply, historyOnly                                         bool
+	timeout                                                    time.Duration
+}
+
 func run(ctx context.Context, args []string, out io.Writer) error {
-	flags := flag.NewFlagSet("atto-import-blessing", flag.ContinueOnError)
-	flags.SetOutput(out)
-	dsnEnv := flags.String("mysql-dsn-env", "BLESSING_MYSQL_DSN", "environment variable containing the read-only source MySQL DSN")
-	prefix := flags.String("table-prefix", "", "Blessing table prefix, e.g. bs_")
-	export := flags.String("export-mapping", "", "create a private CSV template (refuses overwrite); no target database is opened")
-	mapping := flags.String("mapping", "", "reviewed CSV template; every player must be marked import or skip")
-	issuer := flags.String("oidc-issuer", os.Getenv("OIDC_ISSUER"), "target OIDC issuer, exactly matching the server configuration")
-	textures := flags.String("textures-dir", "", "copy of Blessing storage/textures")
-	dataDir := flags.String("data-dir", "", "Atto data directory (required except when exporting the mapping)")
-	apply := flags.Bool("apply", false, "commit the import; default is a read-only dry run")
-	historyOnly := flags.Bool("history-only", false, "append uploader library skins to already migrated accounts without changing their current profiles")
-	timeout := flags.Duration("timeout", 10*time.Minute, "maximum duration for reading and importing")
-	if err := flags.Parse(args); err != nil {
-		return err
+	cmd := &cobra.Command{Use: "atto-import-blessing", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs}
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	config := viper.New()
+	if err := config.BindEnv("issuer", "OIDC_ISSUER"); err != nil {
+		return fmt.Errorf("bind issuer configuration: %w", err)
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments")
+	opts := importOptions{}
+	flags := cmd.Flags()
+	flags.StringVar(
+		&opts.dsnEnv,
+		"mysql-dsn-env",
+		"BLESSING_MYSQL_DSN",
+		"environment variable containing the read-only source MySQL DSN",
+	)
+	flags.StringVar(&opts.prefix, "table-prefix", "", "Blessing table prefix, e.g. bs_")
+	flags.StringVar(&opts.export, "export-mapping", "", "create a private CSV template; refuses overwrite")
+	flags.StringVar(&opts.mapping, "mapping", "", "reviewed CSV template; mark every player import or skip")
+	flags.StringVar(&opts.issuer, "oidc-issuer", config.GetString("issuer"), "target OIDC issuer")
+	flags.StringVar(&opts.textures, "textures-dir", "", "copy of Blessing storage/textures")
+	flags.StringVar(&opts.dataDir, "data-dir", "", "Atto data directory")
+	flags.BoolVar(&opts.apply, "apply", false, "commit the import; default is a read-only dry run")
+	flags.BoolVar(&opts.historyOnly, "history-only", false, "append uploaded library skins to existing accounts")
+	flags.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "maximum duration for reading and importing")
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error { return executeImport(cmd.Context(), opts, out) }
+	cmd.SetArgs(command.NormalizeArgs(args, cmd.Flags()))
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		return fmt.Errorf("run Blessing import: %w", err)
 	}
-	if (*export == "") == (*mapping == "") {
+	return nil
+}
+
+func (opts importOptions) validate() error {
+	if (opts.export == "") == (opts.mapping == "") {
 		return fmt.Errorf("specify exactly one of -export-mapping or -mapping")
 	}
-	if *export != "" && (*apply || *dataDir != "" || *historyOnly) {
+	if opts.export != "" && (opts.apply || opts.dataDir != "" || opts.historyOnly) {
 		return fmt.Errorf("-export-mapping cannot be combined with -apply, -data-dir or -history-only")
 	}
-	if *mapping != "" && (*dataDir == "" || *issuer == "") {
+	if opts.mapping != "" && (opts.dataDir == "" || opts.issuer == "") {
 		return fmt.Errorf("-data-dir and -oidc-issuer (or OIDC_ISSUER) are required")
 	}
-	if *timeout <= 0 {
+	if opts.timeout <= 0 {
 		return fmt.Errorf("-timeout must be positive")
 	}
-	dsn := os.Getenv(*dsnEnv)
-	if dsn == "" {
-		return fmt.Errorf("set %s to a read-only MySQL DSN; do not pass credentials as arguments", *dsnEnv)
+	return nil
+}
+
+func executeImport(ctx context.Context, opts importOptions, out io.Writer) error {
+	if err := opts.validate(); err != nil {
+		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	dsn := os.Getenv(opts.dsnEnv)
+	if dsn == "" {
+		return fmt.Errorf("set %s to a read-only MySQL DSN; do not pass credentials as arguments", opts.dsnEnv)
+	}
+	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
 	db, err := blessing.OpenMySQL(ctx, dsn)
 	if err != nil {
-		return err
+		return fmt.Errorf("open source database: %w", err)
 	}
-	defer db.Close()
-	snapshot, err := blessing.Read(ctx, db, *prefix)
+	defer func() { _ = db.Close() }()
+	snapshot, err := blessing.Read(ctx, db, opts.prefix)
 	if err != nil {
-		return err
+		return fmt.Errorf("read source snapshot: %w", err)
 	}
-	fmt.Fprintf(out, "Source: %d accounts, %d players. No source data was changed.\n", len(snapshot.Accounts), len(snapshot.Players))
-	if *export != "" {
-		if err = blessing.WriteTemplate(*export, snapshot); err != nil {
-			return err
+	fmt.Fprintf(
+		out,
+		"Source: %d accounts, %d players. No source data was changed.\n",
+		len(snapshot.Accounts),
+		len(snapshot.Players),
+	)
+	if opts.export != "" {
+		if err = blessing.WriteTemplate(opts.export, snapshot); err != nil {
+			return fmt.Errorf("export identity mapping: %w", err)
 		}
-		fmt.Fprintf(out, "Created %s. Choose one player per account, set import/skip and fill authoritative OIDC subjects. Missing/review UUIDs must be verified manually.\n", *export)
+		fmt.Fprintf(
+			out,
+			"Created %s. Choose one player per account, set import/skip and fill authoritative OIDC subjects. Missing/review UUIDs must be verified manually.\n",
+			opts.export,
+		)
 		return nil
 	}
-	f, err := os.Open(*mapping)
+	return importSnapshot(ctx, opts, snapshot, out)
+}
+
+func importSnapshot(ctx context.Context, opts importOptions, snapshot *blessing.Snapshot, out io.Writer) error {
+	f, err := os.Open(opts.mapping)
 	if err != nil {
-		return err
+		return fmt.Errorf("open identity mapping: %w", err)
 	}
+	defer func() { _ = f.Close() }()
 	mappings, err := blessing.ReadMapping(f)
-	f.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("read identity mapping: %w", err)
 	}
 	buildPlan, importProfiles := blessing.BuildPlan, server.ImportProfiles
-	if *historyOnly {
+	if opts.historyOnly {
 		buildPlan, importProfiles = blessing.BuildHistoryPlan, server.ImportProfileHistory
 	}
-	plan, err := buildPlan(snapshot, mappings, *issuer, *textures)
+	plan, err := buildPlan(snapshot, mappings, opts.issuer, opts.textures)
 	if err != nil {
-		return err
+		return fmt.Errorf("plan source import: %w", err)
 	}
-	result, err := importProfiles(ctx, *dataDir, plan.Profiles, *apply)
+	result, err := importProfiles(ctx, opts.dataDir, plan.Profiles, opts.apply)
 	if err != nil {
-		return err
+		return fmt.Errorf("import source snapshot: %w", err)
 	}
 	mode := "DRY RUN (target unchanged)"
-	if *apply {
+	if opts.apply {
 		mode = "COMMITTED"
 	}
-	fmt.Fprintf(out, "%s: %d new, %d existing profiles preserved, %d assigned skins; %d players explicitly skipped, %d accounts without players, %d capes omitted.\n", mode, result.Added, result.Unchanged, plan.Skins, plan.Skipped, plan.AccountsWithoutPlayers, plan.CapesOmitted)
-	fmt.Fprintf(out, "Library history: %d source skins selected by uploader, %d new entries, %d already present; %d library skins omitted because their uploaders are not mapped.\n", plan.HistorySkins, result.HistoryAdded, result.HistoryUnchanged, plan.HistorySkipped)
-	fmt.Fprintln(out, "Passwords, launcher tokens, closets, permissions and signing keys are not migrated. Imported users log in with OIDC and generate new launcher keys.")
+	fmt.Fprintf(
+		out,
+		"%s: %d new, %d existing profiles preserved, %d assigned skins; %d players explicitly skipped, %d accounts without players, %d capes omitted.\n",
+		mode,
+		result.Added,
+		result.Unchanged,
+		plan.Skins,
+		plan.Skipped,
+		plan.AccountsWithoutPlayers,
+		plan.CapesOmitted,
+	)
+	fmt.Fprintf(
+		out,
+		"Library history: %d source skins selected by uploader, %d new entries, %d already present; %d library skins omitted because their uploaders are not mapped.\n",
+		plan.HistorySkins,
+		result.HistoryAdded,
+		result.HistoryUnchanged,
+		plan.HistorySkipped,
+	)
+	fmt.Fprintln(
+		out,
+		"Passwords, launcher tokens, closets, permissions and signing keys are not migrated. Imported users log in with OIDC and generate new launcher keys.",
+	)
 	return nil
 }
+
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
-		if err == flag.ErrHelp {
-			return
-		}
 		fmt.Fprintln(os.Stderr, "Import failed:", err)
+		cancel()
 		os.Exit(1)
 	}
+	cancel()
 }

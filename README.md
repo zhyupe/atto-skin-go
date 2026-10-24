@@ -38,7 +38,7 @@ go build -o atto-import-blessing ./cmd/atto-import-blessing
 
 ## 运行
 
-需要 Go 1.26 或更新版本。使用环境变量配置；程序本身不自动读取 `.env`。
+需要 Go 1.26 或更新版本。支持环境变量和命令行参数配置；参数优先于环境变量。运行 `atto-skin-go --help` 查看选项，程序本身不自动读取 `.env`。
 
 ```sh
 cp .env.example .env
@@ -65,7 +65,7 @@ Compose 默认只将端口暴露在宿主机 `127.0.0.1:8080`，数据写入命�
 
 ## GHCR 镜像
 
-GitHub Actions 在 Go 测试和 MySQL 集成测试通过后，构建并发布 `linux/amd64`、`linux/arm64` 镜像到：
+GitHub Actions 在 静态检查、Go 测试、MySQL 集成测试及浏览器测试通过后，构建并发布 `linux/amd64`、`linux/arm64` 镜像到：
 
 ```text
 ghcr.io/zhyupe/atto-skin-go
@@ -118,7 +118,7 @@ https://skin.example.com/auth/callback
 
 `BASE_URL` 和 `OIDC_ISSUER` 仅允许 HTTPS；回环地址允许 HTTP，供本地开发使用。Identity 绑定 issuer 和 subject，邮箱或昵称改变不会新建角色。更换 issuer 会建立新的身份映射。
 
-所有通过该 OIDC 客户端成功认证的用户都可进入站点。若只允许某个组织或用户组，请在身份提供方设置该客户端的访问策略。网页登录有效期为 24 小时，最多保留 10 个网页会话。
+所有通过该 OIDC 客户端成功认证的用户都可进入站点。若只允许某个组织或用户组，请在身份提供方设置该客户端的访问策略。网页登录使用签名并加密的 Cookie，有效期为 24 小时。升级前的网页登录会话可继续使用至到期。
 
 ## 在 Minecraft 中使用
 
@@ -139,7 +139,7 @@ java -javaagent:authlib-injector.jar=https://skin.example.com/api/yggdrasil/ -ja
 
 启动器的传统 Yggdrasil 密码接口不能直接执行浏览器 OIDC 跳转，因此使用独立的随机启动器密钥。它不是身份提供方密码，也不是 OIDC access token。密钥完整内容仅在生成时显示，数据库只保存 SHA-256 摘要。密钥为 256 位随机值，不接受用户设置的弱密码。
 
-重新生成密钥会撤销之前的全部游戏令牌和待验证进服记录。游戏令牌有效期为 15 天，每个用户最多保留 10 个；刷新操作原子地撤销旧令牌并发出新令牌。网页退出只结束当前网页会话；启动器的 `signout` 撤销该用户的全部游戏令牌。
+重新生成密钥会撤销之前的全部游戏令牌和待验证进服记录。游戏令牌有效期为 15 天，每个用户最多保留 10 个；刷新操作原子地撤销旧令牌并发出新令牌。新 Cookie 会话退出时会撤销该账号所有使用新 Cookie 的网页登录，游戏令牌不受影响；升级前的旧会话退出只结束该会话。启动器的 `signout` 撤销该用户的全部游戏令牌。
 
 改名不会改变 UUID，但会将已有游戏令牌标记为需要刷新，启动器刷新登录后会取得新名字。UUID 为随机 UUID v4，不自动继承已有正版或离线服务器的 UUID；迁移既有服务器时需要自行迁移玩家数据。
 
@@ -149,7 +149,7 @@ java -javaagent:authlib-injector.jar=https://skin.example.com/api/yggdrasil/ -ja
 
 皮肤以重新编码后的 SHA-256 为 URL 文件名，按内容去重。所有角色与皮肤查询均为公开接口，供游戏客户端下载。删除皮肤指解除角色当前皮肤关联；已发布的历史纹理仍可通过原有 URL 下载，避免破坏客户端缓存。当前不自动清理历史纹理。
 
-`DATA_DIR/atto.db` 保存账号、皮肤、会话和持久化 RSA 签名私钥。运行时还会有 SQLite WAL 文件。备份时停止进程后备份整个数据目录，或使用 SQLite 的在线备份机制；不要仅复制正在写入的 `.db` 文件。恢复时需保留签名私钥所在数据库。数据库目录应只允许服务账号访问。
+`DATA_DIR/atto.db` 保存账号、皮肤、旧网页会话、游戏令牌、Cookie 加密密钥和 RSA 签名私钥。运行时还会有 SQLite WAL 文件。备份时停止进程后备份整个数据目录，或使用 SQLite 的在线备份机制；不要仅复制正在写入的 `.db` 文件。恢复时需保留密钥所在数据库，才能延续签名和网页登录状态。数据库目录应只允许服务账号访问。
 
 部署为单实例。当前进程中的请求限流器不是分布式限流器，SQLite 也不用于多实例共享网络文件系统。
 
@@ -192,7 +192,13 @@ API Root 为 `/api/yggdrasil/`；站点响应提供 `X-Authlib-Injector-API-Loca
 
 ## 开发与检查
 
+数据库结构由 `internal/database/migrations` 中的 goose 迁移管理；SQLite 查询写在 `internal/database/sql`，使用 sqlc 1.31.1 生成并提交 `internal/database/queries`。Blessing 的兼容查询保存在 `internal/blessing/sql`，通过 sqlx 读取。
+
+静态检查使用 golangci-lint 2.15.0，配置基于 Maratori 的规则，启用跨包错误包装检查。CI 会验证生成代码与 SQL 一致，并阻止未通过检查的镜像发布。
+
 ```sh
+sqlc generate
+golangci-lint run
 go test -race ./...
 go vet ./...
 CGO_ENABLED=0 go build ./cmd/atto-skin-go
@@ -202,7 +208,7 @@ CGO_ENABLED=0 go build ./cmd/atto-skin-go
 
 健康检查：`GET /healthz`（检查数据库可用性）。
 
-代码目录：`cmd/atto-skin-go` 为进程入口，`internal/server` 为 HTTP 服务、OIDC、存储和协议实现，`internal/server/web` 为内嵌页面。
+代码目录：`cmd/atto-skin-go` 为进程入口，`internal/server` 为 HTTP 服务、OIDC、存储和协议实现，`internal/server/web` 为内嵌页面。`internal/logging` 统一输出 JSON 日志，HTTP 请求的 `request_id` 与响应 `X-Request-ID` 对应。
 
 ## 界面开发与验证
 

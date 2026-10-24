@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"os"
@@ -12,60 +12,114 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/zhyupe/atto-skin-go/internal/command"
+	"github.com/zhyupe/atto-skin-go/internal/logging"
+
 	"github.com/zhyupe/atto-skin-go/internal/server"
 )
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func run(ctx context.Context, args []string) error {
+	cmd := &cobra.Command{Use: "atto-skin-go", SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs}
+	config := viper.New()
+	defaults := map[string]string{
+		"base-url":           "http://localhost:8080",
+		"data-dir":           "data",
+		"listen-addr":        ":8080",
+		"oidc-issuer":        "",
+		"oidc-client-id":     "",
+		"oidc-client-secret": "",
+		"trusted-proxies":    "",
 	}
-	return fallback
+	for name, value := range defaults {
+		cmd.Flags().String(name, value, name)
+		if err := config.BindPFlag(name, cmd.Flags().Lookup(name)); err != nil {
+			return fmt.Errorf("bind flag %s: %w", name, err)
+		}
+		if err := config.BindEnv(name, strings.ToUpper(strings.ReplaceAll(name, "-", "_"))); err != nil {
+			return fmt.Errorf("bind environment %s: %w", name, err)
+		}
+	}
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		cfg := server.Config{
+			BaseURL:      config.GetString("base-url"),
+			DataDir:      config.GetString("data-dir"),
+			Issuer:       config.GetString("oidc-issuer"),
+			ClientID:     config.GetString("oidc-client-id"),
+			ClientSecret: config.GetString("oidc-client-secret"),
+		}
+		for raw := range strings.SplitSeq(config.GetString("trusted-proxies"), ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(raw)
+			if err != nil {
+				return fmt.Errorf("parse trusted proxy: %w", err)
+			}
+			cfg.TrustedProxies = append(cfg.TrustedProxies, prefix)
+		}
+		return serve(cmd.Context(), cfg, config.GetString("listen-addr"))
+	}
+	cmd.SetArgs(command.NormalizeArgs(args, cmd.Flags()))
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		return fmt.Errorf("run skin server: %w", err)
+	}
+	return nil
 }
-func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	cfg := server.Config{BaseURL: env("BASE_URL", "http://localhost:8080"), DataDir: env("DATA_DIR", "data"), Issuer: os.Getenv("OIDC_ISSUER"), ClientID: os.Getenv("OIDC_CLIENT_ID"), ClientSecret: os.Getenv("OIDC_CLIENT_SECRET")}
-	for _, raw := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			continue
-		}
-		p, err := netip.ParsePrefix(raw)
-		if err != nil {
-			return err
-		}
-		cfg.TrustedProxies = append(cfg.TrustedProxies, p)
-	}
+
+func serve(ctx context.Context, cfg server.Config, listen string) error {
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	app, err := server.New(startup, cfg)
 	cancel()
 	if err != nil {
-		return err
+		return fmt.Errorf("serve: %w", err)
 	}
 	defer app.Close()
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); app.Maintenance(workerCtx) }()
 	defer func() { stopWorker(); <-workerDone }()
-	srv := &http.Server{Addr: env("LISTEN_ADDR", ":8080"), Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 << 10}
+	srv := &http.Server{
+		Addr:              listen,
+		Handler:           app.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       20 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    32 << 10,
+	}
 	done := make(chan error, 1)
 	go func() { done <- srv.ListenAndServe() }()
-	slog.Info("Atto Skin started", "listen", srv.Addr, "base_url", cfg.BaseURL)
+	logging.From(ctx).WithField("listen", srv.Addr).WithField("base_url", cfg.BaseURL).Info("Atto Skin started")
 	select {
-	case err := <-done:
+	case err = <-done:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return err
+		if err != nil {
+			return fmt.Errorf("serve: %w", err)
+		}
+		return nil
 	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdown)
+		shutdown, stopShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stopShutdown()
+		if err = srv.Shutdown(shutdown); err != nil {
+			return fmt.Errorf("serve: %w", err)
+		}
+		return nil
 	}
 }
 func main() {
-	if err := run(); err != nil {
-		slog.Error("server stopped", "error", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+
+	if err := run(ctx, os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		stop()
 		os.Exit(1)
 	}
+
+	stop()
 }

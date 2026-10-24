@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -19,7 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zhyupe/atto-skin-go/internal/logging"
+
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/gorilla/sessions"
 	"golang.org/x/oauth2"
 )
 
@@ -49,7 +51,7 @@ func (c *Config) Validate() error {
 		if ip, e := netip.ParseAddr(u.Hostname()); e == nil {
 			local = ip.IsLoopback()
 		}
-		if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		if u.Scheme != "https" && (u.Scheme != "http" || !local) {
 			return fmt.Errorf("%s must use HTTPS (HTTP is allowed only on loopback)", name)
 		}
 	}
@@ -71,21 +73,33 @@ type Server struct {
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client
 	page       *template.Template
+	sessions   *sessions.CookieStore
+	csrf       *http.CrossOriginProtection
 	mu         sync.Mutex
 	limits     map[string]bucket
 }
 
 func New(ctx context.Context, cfg Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new: %w", err)
 	}
-	db, err := openDB(cfg.DataDir)
+	db, err := openDB(ctx, cfg.DataDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new: %w", err)
 	}
-	s := &Server{cfg: cfg, db: db, httpClient: &http.Client{Timeout: 15 * time.Second}, limits: map[string]bucket{}}
-	fail := func(e error) (*Server, error) { db.Close(); return nil, e }
-	s.key, err = loadKey(db)
+	s := &Server{
+		cfg:        cfg,
+		db:         db,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+		limits:     map[string]bucket{},
+		csrf:       http.NewCrossOriginProtection(),
+	}
+	fail := func(e error) (*Server, error) { _ = db.Close(); return nil, fmt.Errorf("initialize server: %w", e) }
+	s.key, err = loadKey(ctx, db)
+	if err != nil {
+		return fail(err)
+	}
+	s.sessions, err = newCookieStore(ctx, db)
 	if err != nil {
 		return fail(err)
 	}
@@ -98,13 +112,24 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return fail(fmt.Errorf("OIDC discovery: %w", err))
 	}
 	s.verifier = provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-	s.oauth = oauth2.Config{ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, Endpoint: provider.Endpoint(), RedirectURL: cfg.BaseURL + "/auth/callback", Scopes: []string{oidc.ScopeOpenID, "profile"}}
-	if err = s.cleanup(); err != nil {
+	s.oauth = oauth2.Config{
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		Endpoint:     provider.Endpoint(),
+		RedirectURL:  cfg.BaseURL + "/auth/callback",
+		Scopes:       []string{oidc.ScopeOpenID, "profile"},
+	}
+	if err = s.cleanup(ctx); err != nil {
 		return fail(err)
 	}
 	return s, nil
 }
-func (s *Server) Close() error { return s.db.Close() }
+func (s *Server) Close() error {
+	if err := s.db.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	return nil
+}
 func (s *Server) Maintenance(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -113,21 +138,21 @@ func (s *Server) Maintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := s.cleanup(); err != nil {
-				slog.Error("cleanup failed", "error", err)
+			if err := s.cleanup(ctx); err != nil {
+				logging.From(ctx).WithError(err).Error("clean up expired records")
 			}
 		}
 	}
 }
 func (s *Server) Handler() http.Handler {
-	m := http.NewServeMux()
+	m := newRouter()
 	m.HandleFunc("GET /{$}", s.home)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if s.db.PingContext(r.Context()) != nil {
-			http.Error(w, "unavailable", 503)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		w.Write([]byte("ok\n"))
+		_, _ = w.Write([]byte("ok\n"))
 	})
 	m.HandleFunc("GET /static/{file}", s.static)
 	m.HandleFunc("GET /auth/login", s.login)
@@ -153,16 +178,17 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /api/yggdrasil/api/users/profiles/minecraft/{name}", s.profileByName)
 	m.HandleFunc("PUT /api/yggdrasil/api/user/profile/{uuid}/{kind}", s.uploadProtocol)
 	m.HandleFunc("DELETE /api/yggdrasil/api/user/profile/{uuid}/{kind}", s.uploadProtocol)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return logging.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		// no-referrer turns the Origin of browser form POSTs into "null".
 		// Keep same-origin form submissions verifiable without leaking callback URLs externally.
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
-		w.Header().Set("X-Authlib-Injector-API-Location", s.cfg.BaseURL+"/api/yggdrasil/")
+		w.Header().
+			Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("X-Authlib-Injector-Api-Location", s.cfg.BaseURL+"/api/yggdrasil/")
 		w.Header().Set("Cache-Control", "no-store")
 		m.ServeHTTP(w, r)
-	})
+	}))
 }
 func jsonResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -174,8 +200,8 @@ func jsonResponse(w http.ResponseWriter, status int, v any) {
 func apiError(w http.ResponseWriter, status int, kind, message string) {
 	jsonResponse(w, status, map[string]string{"error": kind, "errorMessage": message})
 }
-func internalError(w http.ResponseWriter, err error) {
-	slog.Error("request failed", "error", err)
+func internalError(ctx context.Context, w http.ResponseWriter, err error) {
+	logging.From(ctx).WithError(err).Error("serve request")
 	apiError(w, 500, "InternalServerError", "An internal error occurred.")
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -185,7 +211,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		apiError(w, 400, "IllegalArgumentException", "Invalid JSON request.")
 		return false
 	}
-	if err := d.Decode(new(any)); err != io.EOF {
+	if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
 		apiError(w, 400, "IllegalArgumentException", "Expected one JSON value.")
 		return false
 	}

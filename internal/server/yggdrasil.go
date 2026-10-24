@@ -1,19 +1,24 @@
 package server
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha1" // Required by the Yggdrasil SHA1withRSA wire protocol.
+	"crypto/sha1" //nolint:gosec // Required by the Yggdrasil SHA1withRSA wire protocol.
 	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zhyupe/atto-skin-go/internal/database/queries"
 )
 
 type profile struct {
@@ -31,23 +36,34 @@ func basicProfile(u user) profile { return profile{ID: u.ID, Name: u.Name} }
 func (s *Server) fullProfile(u user, signed bool) (profile, error) {
 	textures := map[string]any{}
 	if u.SkinHash != "" {
-		textures["SKIN"] = map[string]any{"url": s.cfg.BaseURL + "/textures/" + u.SkinHash, "metadata": map[string]string{"model": u.Model}}
+		textures["SKIN"] = map[string]any{
+			"url":      s.cfg.BaseURL + "/textures/" + u.SkinHash,
+			"metadata": map[string]string{"model": u.Model},
+		}
 	}
-	payload := map[string]any{"timestamp": time.Now().UnixMilli(), "profileId": u.ID, "profileName": u.Name, "textures": textures}
+	payload := map[string]any{
+		"timestamp":   time.Now().UnixMilli(),
+		"profileId":   u.ID,
+		"profileName": u.Name,
+		"textures":    textures,
+	}
 	if signed {
 		payload["signatureRequired"] = true
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return profile{}, err
+		return profile{}, fmt.Errorf("full profile: %w", err)
 	}
-	props := []property{{Name: "textures", Value: base64.StdEncoding.EncodeToString(b)}, {Name: "uploadableTextures", Value: "skin"}}
+	props := []property{
+		{Name: "textures", Value: base64.StdEncoding.EncodeToString(b)},
+		{Name: "uploadableTextures", Value: skinKind},
+	}
 	if signed {
 		for i := range props {
-			hash := sha1.Sum([]byte(props[i].Value))
+			hash := sha1.Sum([]byte(props[i].Value)) //nolint:gosec // Yggdrasil requires SHA1withRSA signatures.
 			sig, e := rsa.SignPKCS1v15(rand.Reader, s.key, crypto.SHA1, hash[:])
 			if e != nil {
-				return profile{}, e
+				return profile{}, fmt.Errorf("full profile: %w", e)
 			}
 			props[i].Signature = base64.StdEncoding.EncodeToString(sig)
 		}
@@ -56,9 +72,26 @@ func (s *Server) fullProfile(u user, signed bool) (profile, error) {
 	p.Properties = props
 	return p, nil
 }
-func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
+func (s *Server) metadata(w http.ResponseWriter, _ *http.Request) {
 	base, _ := url.Parse(s.cfg.BaseURL)
-	jsonResponse(w, 200, map[string]any{"meta": map[string]any{"serverName": "Atto Skin", "implementationName": "atto-skin-go", "implementationVersion": "0.1.0", "feature.non_email_login": true, "links": map[string]string{"homepage": s.cfg.BaseURL, "register": s.cfg.BaseURL + "/auth/login"}}, "skinDomains": []string{base.Hostname()}, "signaturePublickey": publicKey(s.key)})
+	jsonResponse(
+		w,
+		200,
+		map[string]any{
+			"meta": map[string]any{
+				"serverName":              "Atto Skin",
+				"implementationName":      "atto-skin-go",
+				"implementationVersion":   "0.1.0",
+				"feature.non_email_login": true,
+				"links": map[string]string{
+					"homepage": s.cfg.BaseURL,
+					"register": s.cfg.BaseURL + "/auth/login",
+				},
+			},
+			"skinDomains":        []string{base.Hostname()},
+			"signaturePublickey": publicKey(s.key),
+		},
+	)
 }
 
 type authRequest struct {
@@ -91,9 +124,9 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request, req authReq
 		apiError(w, 429, "TooManyRequestsException", "Too many attempts; try again in one minute.")
 		return user{}, false
 	}
-	u, err := s.userByName(req.Username)
-	if err != nil && err != sql.ErrNoRows {
-		internalError(w, err)
+	u, err := s.userByName(r.Context(), req.Username)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		internalError(r.Context(), w, err)
 		return user{}, false
 	}
 	candidate := digest(req.Password)
@@ -104,24 +137,29 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request, req authReq
 	}
 	return u, true
 }
-func (s *Server) lookupToken(raw string, client *string, allowStale bool) (gameToken, error) {
+func (s *Server) lookupToken(ctx context.Context, raw string, client *string, allowStale bool) (gameToken, error) {
 	t := gameToken{Hash: digest(raw)}
-	err := s.db.QueryRow("SELECT user_id,client,stale FROM tokens WHERE hash=? AND expires>?", t.Hash, time.Now().Unix()).Scan(&t.UserID, &t.Client, &t.Stale)
+	err := s.db.QueryRowContext(ctx, queries.LookupToken, t.Hash, time.Now().Unix()).
+		Scan(&t.UserID, &t.Client, &t.Stale)
 	if err != nil {
-		return t, err
+		return t, fmt.Errorf("lookup token: %w", err)
 	}
 	if (t.Stale && !allowStale) || (client != nil && *client != t.Client) {
 		return t, sql.ErrNoRows
 	}
 	return t, nil
 }
-func insertToken(tx *sql.Tx, uid, client, raw string) error {
+func insertToken(ctx context.Context, tx *sql.Tx, uid, client, raw string) error {
 	now := time.Now()
-	if _, err := tx.Exec("INSERT INTO tokens(hash,user_id,client,issued,expires) VALUES(?,?,?,?,?)", digest(raw), uid, client, now.Unix(), now.Add(15*24*time.Hour).Unix()); err != nil {
-		return err
+	if _, err := queries.New(tx).
+		CreateToken(ctx, queries.CreateTokenParams{Hash: digest(raw), UserID: uid, Client: client, Issued: now.Unix(), Expires: now.Add(15 * 24 * time.Hour).Unix()}); err != nil {
+		return fmt.Errorf("insert token: %w", err)
 	}
-	_, err := tx.Exec("DELETE FROM tokens WHERE user_id=? AND rowid NOT IN (SELECT rowid FROM tokens WHERE user_id=? ORDER BY rowid DESC LIMIT 10)", uid, uid)
-	return err
+	_, err := queries.New(tx).PruneTokens(ctx, queries.PruneTokensParams{UserID: uid, UserID_2: uid})
+	if err != nil {
+		return fmt.Errorf("insert token: %w", err)
+	}
+	return nil
 }
 func authResponse(u user, access, client string, includeUser, available bool) map[string]any {
 	v := map[string]any{"accessToken": access, "clientToken": client, "selectedProfile": basicProfile(u)}
@@ -150,29 +188,29 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) {
 	if req.ClientToken != nil {
 		client = *req.ClientToken
 	}
-	raw := randomHex(32)
-	tx, err := s.db.Begin()
+	raw := randomHex()
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	// Recheck the secret under the write transaction so key rotation cannot race login.
-	current, err := scanUser(tx.QueryRow("SELECT "+userColumns+" FROM users WHERE id=? AND secret_hash=?", u.ID, u.SecretHash))
-	if err == sql.ErrNoRows {
+	current, err := scanUser(tx.QueryRowContext(r.Context(), queries.GetUserBySecret, u.ID, u.SecretHash))
+	if errors.Is(err, sql.ErrNoRows) {
 		forbidden(w)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	if err = insertToken(tx, current.ID, client, raw); err != nil {
-		internalError(w, err)
+	if err = insertToken(r.Context(), tx, current.ID, client, raw); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	jsonResponse(w, 200, authResponse(current, raw, client, req.RequestUser, true))
@@ -187,34 +225,35 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "IllegalArgumentException", "This token already has a selected profile.")
 		return
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var uid, client string
-	err = tx.QueryRow("DELETE FROM tokens WHERE hash=? AND expires>? AND (? IS NULL OR client=?) RETURNING user_id,client", digest(req.AccessToken), time.Now().Unix(), req.ClientToken, req.ClientToken).Scan(&uid, &client)
-	if err == sql.ErrNoRows {
+	err = tx.QueryRowContext(r.Context(), queries.ConsumeToken, digest(req.AccessToken), time.Now().Unix(), req.ClientToken, req.ClientToken).
+		Scan(&uid, &client)
+	if errors.Is(err, sql.ErrNoRows) {
 		forbidden(w)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	u, err := scanUser(tx.QueryRow("SELECT "+userColumns+" FROM users WHERE id=?", uid))
+	u, err := scanUser(tx.QueryRowContext(r.Context(), queries.GetUserByID, uid))
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	raw := randomHex(32)
-	if err = insertToken(tx, uid, client, raw); err != nil {
-		internalError(w, err)
+	raw := randomHex()
+	if err = insertToken(r.Context(), tx, uid, client, raw); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	jsonResponse(w, 200, authResponse(u, raw, client, req.RequestUser, false))
@@ -224,27 +263,27 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	_, err := s.lookupToken(req.AccessToken, req.ClientToken, false)
-	if err == sql.ErrNoRows {
+	_, err := s.lookupToken(r.Context(), req.AccessToken, req.ClientToken, false)
+	if errors.Is(err, sql.ErrNoRows) {
 		forbidden(w)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) invalidate(w http.ResponseWriter, r *http.Request) {
 	var req tokenRequest
 	if !decode(w, r, &req) {
 		return
 	}
-	if _, err := s.db.Exec("DELETE FROM tokens WHERE hash=?", digest(req.AccessToken)); err != nil {
-		internalError(w, err)
+	if _, err := queries.New(s.db).DeleteToken(r.Context(), digest(req.AccessToken)); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) signout(w http.ResponseWriter, r *http.Request) {
 	var req authRequest
@@ -256,11 +295,12 @@ func (s *Server) signout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A concurrent key rotation revokes all earlier tokens itself.
-	if _, err := s.db.Exec("DELETE FROM tokens WHERE user_id=? AND EXISTS(SELECT 1 FROM users WHERE id=? AND secret_hash=?)", u.ID, u.ID, u.SecretHash); err != nil {
-		internalError(w, err)
+	if _, err := queries.New(s.db).
+		SignOut(r.Context(), queries.SignOutParams{UserID: u.ID, ID: u.ID, SecretHash: u.SecretHash}); err != nil {
+		internalError(r.Context(), w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -276,23 +316,22 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Insert from a valid token in one statement, avoiding revocation races.
-	result, err := s.db.Exec(`INSERT INTO joins(server_id,user_id,token_hash,ip,expires)
- SELECT ?,user_id,hash,?,? FROM tokens WHERE hash=? AND user_id=? AND expires>? AND stale=0
- ON CONFLICT(server_id,user_id) DO UPDATE SET token_hash=excluded.token_hash,ip=excluded.ip,expires=excluded.expires`, req.ServerID, s.clientIP(r), time.Now().Add(30*time.Second).Unix(), digest(req.AccessToken), req.SelectedProfile, time.Now().Unix())
+	result, err := queries.New(s.db).
+		JoinServer(r.Context(), queries.JoinServerParams{ServerID: req.ServerID, Ip: s.clientIP(r), Expires: time.Now().Add(30 * time.Second).Unix(), Hash: digest(req.AccessToken), UserID: req.SelectedProfile, Expires_2: time.Now().Unix()})
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	if n == 0 {
 		forbidden(w)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) hasJoined(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -306,51 +345,51 @@ func (s *Server) hasJoined(w http.ResponseWriter, r *http.Request) {
 		ip = parsed.Unmap().String()
 	}
 	var uid string
-	err := s.db.QueryRow(`SELECT u.id FROM joins j JOIN users u ON u.id=j.user_id JOIN tokens t ON t.hash=j.token_hash
- WHERE j.server_id=? AND u.name=? COLLATE NOCASE AND j.expires>? AND t.expires>? AND t.stale=0 AND (?='' OR j.ip=?)`, q.Get("serverId"), q.Get("username"), time.Now().Unix(), time.Now().Unix(), ip, ip).Scan(&uid)
-	if err == sql.ErrNoRows {
-		w.WriteHeader(204)
+	err := s.db.QueryRowContext(r.Context(), queries.FindJoinedUser, q.Get("serverId"), q.Get("username"), time.Now().Unix(), time.Now().Unix(), ip, ip).
+		Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	u, err := s.userByID(uid)
+	u, err := s.userByID(r.Context(), uid)
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	s.writeProfile(w, u, true)
+	s.writeProfile(r.Context(), w, u, true)
 }
-func (s *Server) writeProfile(w http.ResponseWriter, u user, signed bool) {
+func (s *Server) writeProfile(ctx context.Context, w http.ResponseWriter, u user, signed bool) {
 	p, err := s.fullProfile(u, signed)
 	if err != nil {
-		internalError(w, err)
+		internalError(ctx, w, err)
 		return
 	}
 	jsonResponse(w, 200, p)
 }
 func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
-	u, err := s.userByID(r.PathValue("uuid"))
-	if err == sql.ErrNoRows {
-		w.WriteHeader(204)
+	u, err := s.userByID(r.Context(), r.PathValue("uuid"))
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
-	s.writeProfile(w, u, r.URL.Query().Get("unsigned") == "false")
+	s.writeProfile(r.Context(), w, u, r.URL.Query().Get("unsigned") == "false")
 }
 func (s *Server) profileByName(w http.ResponseWriter, r *http.Request) {
-	u, err := s.userByName(r.PathValue("name"))
-	if err == sql.ErrNoRows {
-		w.WriteHeader(204)
+	u, err := s.userByName(r.Context(), r.PathValue("name"))
+	if errors.Is(err, sql.ErrNoRows) {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if err != nil {
-		internalError(w, err)
+		internalError(r.Context(), w, err)
 		return
 	}
 	jsonResponse(w, 200, basicProfile(u))
@@ -367,12 +406,12 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	result := []profile{}
 	seen := map[string]bool{}
 	for _, name := range names {
-		u, err := s.userByName(name)
-		if err == sql.ErrNoRows {
+		u, err := s.userByName(r.Context(), name)
+		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			internalError(w, err)
+			internalError(r.Context(), w, err)
 			return
 		}
 		if !seen[u.ID] {

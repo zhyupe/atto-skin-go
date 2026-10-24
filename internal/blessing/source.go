@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
 type Account struct {
@@ -18,12 +19,17 @@ type Account struct {
 	Permission int
 }
 type Player struct {
-	PID, UID, SkinID, CapeID int64
-	Name                     string
+	PID    int64  `db:"pid"`
+	UID    int64  `db:"uid"`
+	SkinID int64  `db:"tid_skin"`
+	CapeID int64  `db:"tid_cape"`
+	Name   string `db:"name"`
 }
 type Texture struct {
-	ID, Uploader int64
-	Type, Hash   string
+	ID       int64  `db:"tid"`
+	Uploader int64  `db:"uploader"`
+	Type     string `db:"type"`
+	Hash     string `db:"hash"`
 }
 type UUIDRecord struct {
 	PID        sql.NullInt64
@@ -48,8 +54,12 @@ func OpenMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
 	if cfg.DBName == "" {
 		return nil, errors.New("MySQL DSN must specify the source database")
 	}
-	if cfg.MultiStatements || cfg.AllowAllFiles || cfg.AllowCleartextPasswords || cfg.AllowFallbackToPlaintext || cfg.TLSConfig == "skip-verify" || cfg.TLSConfig == "preferred" {
-		return nil, errors.New("DSN must not enable multiStatements, arbitrary local files, cleartext authentication or unverified/fallback TLS")
+	if cfg.MultiStatements || cfg.AllowAllFiles || cfg.AllowCleartextPasswords || cfg.AllowFallbackToPlaintext ||
+		cfg.TLSConfig == "skip-verify" ||
+		cfg.TLSConfig == "preferred" {
+		return nil, errors.New(
+			"DSN must not enable multiStatements, arbitrary local files, cleartext authentication or unverified/fallback TLS",
+		)
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 10 * time.Second
@@ -63,167 +73,155 @@ func OpenMySQL(ctx context.Context, dsn string) (*sql.DB, error) {
 	cfg.ParseTime = false
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open my sql: %w", err)
 	}
 	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(1)
 	if err = db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("connect to source MySQL: %w", err)
 	}
 	return db, nil
 }
 
-// Read uses only SELECTs in a repeatable-read, read-only transaction. Stop writes
-// to the old site while taking its database and filesystem backups.
+// Read takes a consistent source snapshot without changing the source database.
 func Read(ctx context.Context, db *sql.DB, prefix string) (*Snapshot, error) {
 	if !prefixPattern.MatchString(prefix) || len(prefix) > 40 {
 		return nil, errors.New("table prefix must contain at most 40 ASCII letters, digits or underscores")
 	}
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	tx, err := sqlx.NewDb(db, "mysql").BeginTxx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin source snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	columns, err := readColumns(ctx, tx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	columns := map[string]map[string]bool{}
-	rows, err := tx.QueryContext(ctx, "SELECT TABLE_NAME,COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (?,?,?,?,?)", prefix+"users", prefix+"players", prefix+"textures", prefix+"uuid", prefix+"options")
+	name, err := playerNameColumn(columns, prefix)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var table, col string
-		if err = rows.Scan(&table, &col); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if columns[table] == nil {
-			columns[table] = map[string]bool{}
-		}
-		columns[table][col] = true
-	}
-	err = rows.Err()
-	rows.Close()
+	accounts, err := selectSource[Account](ctx, tx, sourceQuery(accountsSQL, prefix, name, ""))
 	if err != nil {
 		return nil, err
 	}
-	for table, required := range map[string][]string{"users": {"uid", "email", "permission"}, "players": {"pid", "uid", "tid_skin", "tid_cape"}, "textures": {"tid", "type", "hash", "uploader"}} {
-		for _, col := range required {
-			if !columns[prefix+table][col] {
-				return nil, fmt.Errorf("unsupported Blessing schema: missing %s.%s; upgrade old schemas to Blessing Skin 5/6 first", prefix+table, col)
-			}
-		}
-	}
-	name := "name"
-	if !columns[prefix+"players"][name] {
-		name = "player_name"
-		if !columns[prefix+"players"][name] {
-			return nil, errors.New("players table has neither name nor player_name")
-		}
-	}
-	table := func(name string) string { return "`" + prefix + name + "`" }
-	s := &Snapshot{Accounts: map[int64]Account{}, Textures: map[int64]Texture{}}
-	rows, err = tx.QueryContext(ctx, "SELECT uid,email,permission FROM "+table("users")+" ORDER BY uid")
+	players, err := selectSource[Player](ctx, tx, sourceQuery(playersSQL, prefix, name, ""))
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var a Account
-		if err = rows.Scan(&a.UID, &a.Email, &a.Permission); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		s.Accounts[a.UID] = a
-	}
-	err = rows.Err()
-	rows.Close()
+	textures, err := selectSource[Texture](ctx, tx, sourceQuery(texturesSQL, prefix, name, ""))
 	if err != nil {
 		return nil, err
 	}
-	rows, err = tx.QueryContext(ctx, "SELECT pid,uid,`"+name+"`,tid_skin,tid_cape FROM "+table("players")+" ORDER BY uid,pid")
-	if err != nil {
+	snapshot := &Snapshot{Accounts: map[int64]Account{}, Players: players, Textures: map[int64]Texture{}}
+	for _, a := range accounts {
+		snapshot.Accounts[a.UID] = a
+	}
+	for _, texture := range textures {
+		snapshot.Textures[texture.ID] = texture
+	}
+	if err = readUUIDs(ctx, tx, snapshot, columns[prefix+"uuid"], prefix); err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var p Player
-		if err = rows.Scan(&p.PID, &p.UID, &p.Name, &p.SkinID, &p.CapeID); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		s.Players = append(s.Players, p)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	if err = readAlgorithm(ctx, tx, snapshot, columns[prefix+"options"], prefix); err != nil {
 		return nil, err
-	}
-	rows, err = tx.QueryContext(ctx, "SELECT tid,type,hash,COALESCE(uploader,0) FROM "+table("textures")+" ORDER BY tid")
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var t Texture
-		if err = rows.Scan(&t.ID, &t.Type, &t.Hash, &t.Uploader); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		s.Textures[t.ID] = t
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	if cols := columns[prefix+"uuid"]; len(cols) > 0 {
-		if !cols["name"] || !cols["uuid"] {
-			return nil, errors.New("unsupported uuid table: expected name and uuid")
-		}
-		pid := "NULL"
-		s.UUIDByPID = cols["pid"]
-		if s.UUIDByPID {
-			pid = "pid"
-		}
-		rows, err = tx.QueryContext(ctx, "SELECT "+pid+",name,uuid FROM "+table("uuid"))
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var u UUIDRecord
-			if err = rows.Scan(&u.PID, &u.Name, &u.UUID); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			s.UUIDs = append(s.UUIDs, u)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	if cols := columns[prefix+"options"]; cols["option_name"] && cols["option_value"] {
-		rows, err = tx.QueryContext(ctx, "SELECT option_value FROM "+table("options")+" WHERE option_name='ygg_uuid_algorithm'")
-		if err != nil {
-			return nil, err
-		}
-		count := 0
-		for rows.Next() {
-			count++
-			if err = rows.Scan(&s.Algorithm); err != nil {
-				rows.Close()
-				return nil, err
-			}
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		if count > 1 {
-			return nil, errors.New("duplicate ygg_uuid_algorithm options")
-		}
 	}
 	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("finish source snapshot: %w", err)
+	}
+	return snapshot, nil
+}
+
+func selectSource[T any](ctx context.Context, tx *sqlx.Tx, query string, args ...any) ([]T, error) {
+	var rows []T
+	if err := tx.SelectContext(ctx, &rows, query, args...); err != nil {
+		return nil, fmt.Errorf("read source rows: %w", err)
+	}
+	return rows, nil
+}
+
+func readColumns(ctx context.Context, tx *sqlx.Tx, prefix string) (map[string]map[string]bool, error) {
+	type column struct {
+		Table string `db:"TABLE_NAME"`
+		Name  string `db:"COLUMN_NAME"`
+	}
+	rows, err := selectSource[column](
+		ctx,
+		tx,
+		columnsSQL,
+		prefix+"users",
+		prefix+"players",
+		prefix+"textures",
+		prefix+"uuid",
+		prefix+"options",
+	)
+	if err != nil {
 		return nil, err
 	}
-	return s, nil
+	columns := map[string]map[string]bool{}
+	for _, row := range rows {
+		if columns[row.Table] == nil {
+			columns[row.Table] = map[string]bool{}
+		}
+		columns[row.Table][row.Name] = true
+	}
+	for table, required := range map[string][]string{"users": {userIDColumn, "email", "permission"}, "players": {playerIDColumn, userIDColumn, "tid_skin", "tid_cape"}, "textures": {"tid", "type", "hash", "uploader"}} {
+		for _, col := range required {
+			if !columns[prefix+table][col] {
+				return nil, fmt.Errorf(
+					"unsupported Blessing schema: missing %s.%s; upgrade old schemas to Blessing Skin 5/6 first",
+					prefix+table,
+					col,
+				)
+			}
+		}
+	}
+	return columns, nil
+}
+
+func playerNameColumn(columns map[string]map[string]bool, prefix string) (string, error) {
+	for _, name := range []string{"name", "player_name"} {
+		if columns[prefix+"players"][name] {
+			return name, nil
+		}
+	}
+	return "", errors.New("players table has neither name nor player_name")
+}
+
+func readUUIDs(ctx context.Context, tx *sqlx.Tx, s *Snapshot, columns map[string]bool, prefix string) error {
+	if len(columns) == 0 {
+		return nil
+	}
+	if !columns["name"] || !columns["uuid"] {
+		return errors.New("unsupported uuid table: expected name and uuid")
+	}
+	pid := "NULL"
+	s.UUIDByPID = columns[playerIDColumn]
+	if s.UUIDByPID {
+		pid = playerIDColumn
+	}
+	rows, err := selectSource[UUIDRecord](ctx, tx, sourceQuery(uuidsSQL, prefix, "", pid))
+	if err != nil {
+		return err
+	}
+	s.UUIDs = rows
+	return nil
+}
+
+func readAlgorithm(ctx context.Context, tx *sqlx.Tx, s *Snapshot, columns map[string]bool, prefix string) error {
+	if !columns["option_name"] || !columns["option_value"] {
+		return nil
+	}
+	rows, err := selectSource[string](ctx, tx, sourceQuery(algorithmSQL, prefix, "", ""))
+	if err != nil {
+		return err
+	}
+	if len(rows) > 1 {
+		return errors.New("duplicate ygg_uuid_algorithm options")
+	}
+	if len(rows) == 1 {
+		s.Algorithm = rows[0]
+	}
+	return nil
 }
