@@ -206,7 +206,13 @@ func TestHistoryUpgradeAndImport(t *testing.T) {
 		t.Fatal("import omitted history", n, err)
 	}
 	if _, err = db.Exec(
-		"DROP TABLE skin_history; DROP TABLE goose_db_version; ALTER TABLE users DROP COLUMN session_version; PRAGMA user_version=1; UPDATE users SET secret_hash='keep-me';",
+		`DROP TABLE skin_history;
+		DROP TABLE goose_db_version;
+		ALTER TABLE users DROP COLUMN session_version;
+		ALTER TABLE users DROP COLUMN launcher_secret;
+		ALTER TABLE tokens ADD COLUMN expires INTEGER NOT NULL DEFAULT 0;
+		PRAGMA user_version=1;
+		UPDATE users SET secret_hash='keep-me';`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +240,7 @@ func TestHistoryUpgradeAndImport(t *testing.T) {
 			t.Fatal(err)
 		}
 		items, _, err := app.skinHistory(t.Context(), u, 0)
-		if err != nil || len(items) != 1 || !items[0].Current || items[0].Model != "slim" || u.SecretHash != "keep-me" {
+		if err != nil || len(items) != 1 || !items[0].Current || items[0].Model != "slim" || u.SecretHash != "" {
 			t.Fatal("upgrade/reopen lost data", items, err)
 		}
 		var png []byte
@@ -243,7 +249,7 @@ func TestHistoryUpgradeAndImport(t *testing.T) {
 			!bytes.Equal(png, p.PNG) {
 			t.Fatal("texture changed", err)
 		}
-		if err = db.QueryRow("PRAGMA user_version").Scan(&n); err != nil || n != 3 {
+		if err = db.QueryRow("PRAGMA user_version").Scan(&n); err != nil || n != 4 {
 			t.Fatal("schema not upgraded", n, err)
 		}
 		db.Close()

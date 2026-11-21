@@ -118,14 +118,20 @@ func TestUpgradeVersionTwoPreservesExistingState(t *testing.T) {
 	s, _ := testServer(t)
 	u, key := seed(t, s, "upgrade-v2", "Alice")
 	require.NoError(t, s.setSkin(t.Context(), u.ID, pngData(t, 64, 64), "slim", ""))
-	cookie, _ := browser(t, s, u)
+	cookie, csrf := browser(t, s, u)
 	token := loginGame(t, s, "Alice", key, "upgrade")["accessToken"].(string)
+	expired := loginGame(t, s, "Alice", key, "expired")["accessToken"].(string)
 	signingKey := publicKey(s.key)
 	require.NoError(t, s.Close())
 	db, err := sql.Open("sqlite", s.cfg.DataDir+"/atto.db")
 	require.NoError(t, err)
 	_, err = db.Exec(
-		"DROP TABLE goose_db_version; ALTER TABLE users DROP COLUMN session_version; PRAGMA user_version=2;",
+		`DROP TABLE goose_db_version;
+		ALTER TABLE users DROP COLUMN session_version;
+		ALTER TABLE users DROP COLUMN launcher_secret;
+		ALTER TABLE tokens ADD COLUMN expires INTEGER NOT NULL DEFAULT 0;
+		UPDATE tokens SET expires=unixepoch()+3600 WHERE client='upgrade';
+		PRAGMA user_version=2;`,
 	)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
@@ -146,6 +152,18 @@ func TestUpgradeVersionTwoPreservesExistingState(t *testing.T) {
 		jsonReq(upgraded, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": token}),
 		http.StatusNoContent,
 	)
+	expect(
+		t,
+		jsonReq(upgraded, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": expired}),
+		http.StatusForbidden,
+	)
+	expect(t, jsonReq(upgraded, "/api/yggdrasil/authserver/authenticate", map[string]string{
+		"username": u.Name,
+		"password": key,
+	}), http.StatusForbidden)
+	replacement := revealedLauncherKey(t, formReq(upgraded, launcherKeyViewPath, url.Values{"csrf": {csrf}}, cookie))
+	require.NotEqual(t, key, replacement)
+	loginGame(t, upgraded, u.Name, replacement, "upgrade-replacement")
 	// Foreign keys must remain enabled after replacing a database connection.
 	upgraded.db.SetMaxIdleConns(0)
 	_, err = upgraded.db.ExecContext(t.Context(), "INSERT INTO web_sessions VALUES('orphan','missing-user','csrf',0)")

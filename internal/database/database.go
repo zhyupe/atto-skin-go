@@ -21,7 +21,7 @@ var migrations embed.FS
 //go:embed schema_version.sql
 var SchemaVersion string
 
-const Version = 3
+const Version = 4
 
 func Open(ctx context.Context, dir string) (*sql.DB, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {

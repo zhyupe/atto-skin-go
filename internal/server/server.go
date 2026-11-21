@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/rsa"
 	"database/sql"
 	"embed"
@@ -66,17 +67,18 @@ type bucket struct {
 	until time.Time
 }
 type Server struct {
-	cfg        Config
-	db         *sql.DB
-	key        *rsa.PrivateKey
-	oauth      oauth2.Config
-	verifier   *oidc.IDTokenVerifier
-	httpClient *http.Client
-	page       *template.Template
-	sessions   *sessions.CookieStore
-	csrf       *http.CrossOriginProtection
-	mu         sync.Mutex
-	limits     map[string]bucket
+	cfg            Config
+	db             *sql.DB
+	key            *rsa.PrivateKey
+	launcherCipher cipher.AEAD
+	oauth          oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	httpClient     *http.Client
+	page           *template.Template
+	sessions       *sessions.CookieStore
+	csrf           *http.CrossOriginProtection
+	mu             sync.Mutex
+	limits         map[string]bucket
 }
 
 func New(ctx context.Context, cfg Config) (*Server, error) {
@@ -100,6 +102,10 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return fail(err)
 	}
 	s.sessions, err = newCookieStore(ctx, db)
+	if err != nil {
+		return fail(err)
+	}
+	s.launcherCipher, err = newLauncherCipher(ctx, db)
 	if err != nil {
 		return fail(err)
 	}
@@ -163,6 +169,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /account/skin/delete", s.withSession(s.deleteWeb))
 	m.HandleFunc("POST /account/skin/restore", s.withSession(s.restoreWeb))
 	m.HandleFunc("POST /account/launcher-key", s.withSession(s.rotateKey))
+	m.HandleFunc("POST /account/launcher-key/view", s.withSession(s.viewLauncherKey))
 	m.HandleFunc("GET /textures/{hash}", s.texture)
 	m.HandleFunc("GET /api/yggdrasil", s.metadata)
 	m.HandleFunc("GET /api/yggdrasil/{$}", s.metadata)

@@ -11,8 +11,9 @@
     try{await navigator.clipboard.writeText(input.value);notice('已复制');}
     catch{input.focus();input.select();notice('请手动复制选中的内容。');}
   });
-  for(const form of document.querySelectorAll('[data-confirm]'))form.addEventListener('submit',event=>{
-    if(!window.confirm(form.dataset.confirm))event.preventDefault();
+  document.addEventListener('submit',event=>{
+    const message=event.submitter?.dataset.confirm;
+    if(message&&!window.confirm(message))event.preventDefault();
   });
   const dialogs=[...document.querySelectorAll('dialog.settings-panel')];
   const supportsDialogs=typeof HTMLDialogElement!=='undefined' && typeof HTMLDialogElement.prototype.showModal==='function';
@@ -39,7 +40,8 @@
       const error=document.createElement('p');error.className='form-error';error.setAttribute('role','alert');error.textContent=$('#server-message').textContent;
       errorPanel.querySelector('.dialog-head').after(error);
     }
-    if(auto||errorPanel)(auto||errorPanel).showModal();
+    const initialPanel=auto||errorPanel||(location.hash==='#connect-panel'?$('#connect-panel'):null);
+    initialPanel?.showModal();
   }
   const renderer=window.AttoSkin, canvas=$('#character'), stage=$('.stage');
   if(!renderer || !canvas || !canvas.getContext('2d'))return;

@@ -43,6 +43,28 @@ func newUUID() string {
 }
 func digest(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
 
+func loadSecretKey(ctx context.Context, db *sql.DB, name string, size int) ([]byte, error) {
+	q := queries.New(db)
+	key, err := q.GetSetting(ctx, name)
+	if errors.Is(err, sql.ErrNoRows) {
+		key = make([]byte, size)
+		if _, err = rand.Read(key); err != nil {
+			return nil, fmt.Errorf("generate %s: %w", name, err)
+		}
+		if _, err = q.PutSetting(ctx, queries.PutSettingParams{Key: name, Value: key}); err != nil {
+			return nil, fmt.Errorf("persist %s: %w", name, err)
+		}
+		key, err = q.GetSetting(ctx, name)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", name, err)
+	}
+	if len(key) != size {
+		return nil, fmt.Errorf("%s has invalid length %d", name, len(key))
+	}
+	return key, nil
+}
+
 func openDB(ctx context.Context, dir string) (*sql.DB, error) {
 	db, err := database.Open(ctx, dir)
 	if err != nil {
@@ -120,7 +142,7 @@ func (s *Server) cleanup(ctx context.Context) error {
 		return fmt.Errorf("cleanup: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, query := range []string{queries.ExpireJoins, queries.ExpireTokens, queries.ExpireWebSessions, queries.ExpireOidcFlows} {
+	for _, query := range []string{queries.ExpireJoins, queries.ExpireWebSessions, queries.ExpireOidcFlows} {
 		if _, err = tx.ExecContext(ctx, query, time.Now().Unix()); err != nil {
 			return fmt.Errorf("cleanup: %w", err)
 		}

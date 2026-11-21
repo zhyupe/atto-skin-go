@@ -38,12 +38,11 @@ type Texture struct {
 }
 
 type Token struct {
-	Hash    string
-	UserID  string
-	Client  string
-	Issued  int64
-	Expires int64
-	Stale   int64
+	Hash   string
+	UserID string
+	Client string
+	Issued int64
+	Stale  int64
 }
 
 type User struct {
@@ -55,6 +54,7 @@ type User struct {
 	SkinHash       string
 	Model          string
 	SessionVersion int64
+	LauncherSecret []byte
 }
 
 type WebSession struct {

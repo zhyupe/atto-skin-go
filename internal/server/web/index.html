@@ -63,9 +63,12 @@
 <dialog open class="settings-panel" id="connect-panel" aria-labelledby="connect-title" {{if .LauncherKey}}data-auto-open{{end}}><div class="dialog-head"><h2 id="connect-title">连接启动器</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div><p class="dialog-intro">在支持 authlib-injector 的启动器中添加外置登录，填入以下信息。</p>
 <label class="field-label" for="endpoint">认证服务器地址</label><div class="copy-field"><input id="endpoint" readonly value="{{.BaseURL}}/api/yggdrasil/"><button type="button" data-copy="endpoint">复制</button></div>
 <label class="field-label" for="player-name">用户名</label><div class="copy-field"><input id="player-name" readonly value="{{.User.Name}}"><button type="button" data-copy="player-name">复制</button></div>
-<div class="key-section"><h3>启动器密钥</h3><p>用专用密钥登录游戏，无需填写统一账号密码。</p>
-{{if .LauncherKey}}<div class="key-reveal"><strong>请保存密钥，完整内容仅在此显示一次。</strong><label class="field-label" for="launcher-key">启动器密钥</label><div class="copy-field"><input id="launcher-key" readonly value="{{.LauncherKey}}"><button type="button" data-copy="launcher-key">复制</button></div></div>{{end}}
-<form method="post" action="/account/launcher-key" {{if .HasKey}}data-confirm="重新生成会使旧密钥和全部游戏会话失效。继续吗？"{{end}}><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="outline" type="submit">{{if .HasKey}}重新生成启动器密钥{{else}}生成启动器密钥{{end}}</button></form><p class="hint">重新生成会使旧密钥与游戏会话失效。</p></div></dialog>
+<div class="key-section"><h3 id="launcher-key-title">启动器密钥</h3><p>在启动器中将此密钥填为密码。</p>
+{{if .LauncherKey}}<div class="copy-field"><input id="launcher-key" aria-labelledby="launcher-key-title" readonly value="{{.LauncherKey}}"><button type="button" data-copy="launcher-key">复制</button></div>{{end}}
+<form method="post" action="/account/launcher-key/view"><input type="hidden" name="csrf" value="{{.CSRF}}">
+{{if not .LauncherKey}}<button class="outline" type="submit">{{if .HasKey}}查看启动器密钥{{else}}生成启动器密钥{{end}}</button>{{end}}
+{{if .HasKey}}<button class="text-button" type="submit" formaction="/account/launcher-key" data-confirm="重置会使旧密钥和全部游戏会话失效。继续吗？">重置启动器密钥</button><noscript><p class="hint">重置会使旧密钥和全部游戏会话失效。</p></noscript>{{end}}
+</form></div></dialog>
 <dialog open class="settings-panel" id="account-panel" aria-labelledby="account-title"><div class="dialog-head"><h2 id="account-title">角色设置</h2><button class="enhanced-only" data-close type="button" aria-label="关闭">×</button></div>
 <form method="post" action="/account/profile"><input type="hidden" name="csrf" value="{{.CSRF}}"><label class="field-label" for="name">Minecraft 角色名</label><input class="full-input" id="name" name="name" value="{{.User.Name}}" pattern="[A-Za-z0-9_]{3,16}" minlength="3" maxlength="16" required autocomplete="off"><p class="hint">3–16 位英文字母、数字或下划线。改名后 UUID 不变。</p><button class="primary full" type="submit">保存名称</button></form>
 <div class="key-section"><span class="field-label">角色 UUID</span><code>{{.User.ID}}</code><form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="text-button" type="submit">退出登录</button></form></div></dialog>

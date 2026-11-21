@@ -43,13 +43,12 @@ func (q *Queries) ConsumeOIDCFlow(ctx context.Context, hash string) (ConsumeOIDC
 }
 
 const ConsumeToken = `-- name: ConsumeToken :one
-DELETE FROM tokens WHERE hash=? AND expires>? AND (? IS NULL OR client=?) RETURNING user_id,client
+DELETE FROM tokens WHERE hash=? AND (? IS NULL OR client=?) RETURNING user_id,client
 `
 
 type ConsumeTokenParams struct {
 	Hash    string
-	Expires int64
-	Column3 interface{}
+	Column2 interface{}
 	Client  string
 }
 
@@ -59,12 +58,7 @@ type ConsumeTokenRow struct {
 }
 
 func (q *Queries) ConsumeToken(ctx context.Context, arg ConsumeTokenParams) (ConsumeTokenRow, error) {
-	row := q.db.QueryRowContext(ctx, ConsumeToken,
-		arg.Hash,
-		arg.Expires,
-		arg.Column3,
-		arg.Client,
-	)
+	row := q.db.QueryRowContext(ctx, ConsumeToken, arg.Hash, arg.Column2, arg.Client)
 	var i ConsumeTokenRow
 	err := row.Scan(&i.UserID, &i.Client)
 	return i, err
@@ -124,15 +118,14 @@ func (q *Queries) CreateOIDCFlow(ctx context.Context, arg CreateOIDCFlowParams) 
 }
 
 const CreateToken = `-- name: CreateToken :execresult
-INSERT INTO tokens(hash,user_id,client,issued,expires) VALUES(?,?,?,?,?)
+INSERT INTO tokens(hash,user_id,client,issued) VALUES(?,?,?,?)
 `
 
 type CreateTokenParams struct {
-	Hash    string
-	UserID  string
-	Client  string
-	Issued  int64
-	Expires int64
+	Hash   string
+	UserID string
+	Client string
+	Issued int64
 }
 
 func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (sql.Result, error) {
@@ -141,7 +134,6 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (sql.R
 		arg.UserID,
 		arg.Client,
 		arg.Issued,
-		arg.Expires,
 	)
 }
 
@@ -221,14 +213,6 @@ func (q *Queries) ExpireOidcFlows(ctx context.Context, expires int64) (sql.Resul
 	return q.db.ExecContext(ctx, ExpireOidcFlows, expires)
 }
 
-const ExpireTokens = `-- name: ExpireTokens :execresult
-DELETE FROM tokens WHERE expires<=?
-`
-
-func (q *Queries) ExpireTokens(ctx context.Context, expires int64) (sql.Result, error) {
-	return q.db.ExecContext(ctx, ExpireTokens, expires)
-}
-
 const ExpireWebSessions = `-- name: ExpireWebSessions :execresult
 DELETE FROM web_sessions WHERE expires<=?
 `
@@ -239,16 +223,15 @@ func (q *Queries) ExpireWebSessions(ctx context.Context, expires int64) (sql.Res
 
 const FindJoinedUser = `-- name: FindJoinedUser :one
 SELECT u.id FROM joins j JOIN users u ON u.id=j.user_id JOIN tokens t ON t.hash=j.token_hash
- WHERE j.server_id=? AND u.name=? COLLATE NOCASE AND j.expires>? AND t.expires>? AND t.stale=0 AND (?='' OR j.ip=?)
+ WHERE j.server_id=? AND u.name=? COLLATE NOCASE AND j.expires>? AND t.stale=0 AND (?='' OR j.ip=?)
 `
 
 type FindJoinedUserParams struct {
-	ServerID  string
-	Name      string
-	Expires   int64
-	Expires_2 int64
-	Column5   interface{}
-	Ip        string
+	ServerID string
+	Name     string
+	Expires  int64
+	Column4  interface{}
+	Ip       string
 }
 
 func (q *Queries) FindJoinedUser(ctx context.Context, arg FindJoinedUserParams) (string, error) {
@@ -256,8 +239,7 @@ func (q *Queries) FindJoinedUser(ctx context.Context, arg FindJoinedUserParams) 
 		arg.ServerID,
 		arg.Name,
 		arg.Expires,
-		arg.Expires_2,
-		arg.Column5,
+		arg.Column4,
 		arg.Ip,
 	)
 	var id string
@@ -274,6 +256,17 @@ func (q *Queries) FindUserIDByName(ctx context.Context, name string) (string, er
 	var id string
 	err := row.Scan(&id)
 	return id, err
+}
+
+const GetLauncherSecret = `-- name: GetLauncherSecret :one
+SELECT launcher_secret FROM users WHERE id=?
+`
+
+func (q *Queries) GetLauncherSecret(ctx context.Context, id string) ([]byte, error) {
+	row := q.db.QueryRowContext(ctx, GetLauncherSecret, id)
+	var launcher_secret []byte
+	err := row.Scan(&launcher_secret)
+	return launcher_secret, err
 }
 
 const GetLegacySession = `-- name: GetLegacySession :one
@@ -519,17 +512,16 @@ func (q *Queries) ImportUser(ctx context.Context, arg ImportUserParams) (sql.Res
 
 const JoinServer = `-- name: JoinServer :execresult
 INSERT INTO joins(server_id,user_id,token_hash,ip,expires)
- SELECT ?,tokens.user_id,tokens.hash,?,? FROM tokens WHERE tokens.hash=? AND tokens.user_id=? AND tokens.expires>? AND tokens.stale=0
+ SELECT ?,tokens.user_id,tokens.hash,?,? FROM tokens WHERE tokens.hash=? AND tokens.user_id=? AND tokens.stale=0
  ON CONFLICT(server_id,user_id) DO UPDATE SET token_hash=excluded.token_hash,ip=excluded.ip,expires=excluded.expires
 `
 
 type JoinServerParams struct {
-	ServerID  string
-	Ip        string
-	Expires   int64
-	Hash      string
-	UserID    string
-	Expires_2 int64
+	ServerID string
+	Ip       string
+	Expires  int64
+	Hash     string
+	UserID   string
 }
 
 func (q *Queries) JoinServer(ctx context.Context, arg JoinServerParams) (sql.Result, error) {
@@ -539,7 +531,6 @@ func (q *Queries) JoinServer(ctx context.Context, arg JoinServerParams) (sql.Res
 		arg.Expires,
 		arg.Hash,
 		arg.UserID,
-		arg.Expires_2,
 	)
 }
 
@@ -583,24 +574,18 @@ func (q *Queries) ListSkinHistory(ctx context.Context, arg ListSkinHistoryParams
 }
 
 const LookupToken = `-- name: LookupToken :one
-SELECT user_id,client,stale FROM tokens WHERE hash=? AND expires>?
+SELECT user_id,client FROM tokens WHERE hash=? AND stale=0
 `
-
-type LookupTokenParams struct {
-	Hash    string
-	Expires int64
-}
 
 type LookupTokenRow struct {
 	UserID string
 	Client string
-	Stale  int64
 }
 
-func (q *Queries) LookupToken(ctx context.Context, arg LookupTokenParams) (LookupTokenRow, error) {
-	row := q.db.QueryRowContext(ctx, LookupToken, arg.Hash, arg.Expires)
+func (q *Queries) LookupToken(ctx context.Context, hash string) (LookupTokenRow, error) {
+	row := q.db.QueryRowContext(ctx, LookupToken, hash)
 	var i LookupTokenRow
-	err := row.Scan(&i.UserID, &i.Client, &i.Stale)
+	err := row.Scan(&i.UserID, &i.Client)
 	return i, err
 }
 
@@ -773,17 +758,16 @@ func (q *Queries) RequireHistorySkin(ctx context.Context, arg RequireHistorySkin
 }
 
 const RequireSkinToken = `-- name: RequireSkinToken :one
-SELECT user_id FROM tokens WHERE hash=? AND user_id=? AND expires>? AND stale=0
+SELECT user_id FROM tokens WHERE hash=? AND user_id=? AND stale=0
 `
 
 type RequireSkinTokenParams struct {
-	Hash    string
-	UserID  string
-	Expires int64
+	Hash   string
+	UserID string
 }
 
 func (q *Queries) RequireSkinToken(ctx context.Context, arg RequireSkinTokenParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, RequireSkinToken, arg.Hash, arg.UserID, arg.Expires)
+	row := q.db.QueryRowContext(ctx, RequireSkinToken, arg.Hash, arg.UserID)
 	var user_id string
 	err := row.Scan(&user_id)
 	return user_id, err
@@ -798,16 +782,17 @@ func (q *Queries) RevokeUserCookies(ctx context.Context, id string) (sql.Result,
 }
 
 const SetLauncherSecret = `-- name: SetLauncherSecret :execresult
-UPDATE users SET secret_hash=? WHERE id=?
+UPDATE users SET secret_hash=?,launcher_secret=? WHERE id=?
 `
 
 type SetLauncherSecretParams struct {
-	SecretHash string
-	ID         string
+	SecretHash     string
+	LauncherSecret []byte
+	ID             string
 }
 
 func (q *Queries) SetLauncherSecret(ctx context.Context, arg SetLauncherSecretParams) (sql.Result, error) {
-	return q.db.ExecContext(ctx, SetLauncherSecret, arg.SecretHash, arg.ID)
+	return q.db.ExecContext(ctx, SetLauncherSecret, arg.SecretHash, arg.LauncherSecret, arg.ID)
 }
 
 const SetUserSkin = `-- name: SetUserSkin :execresult

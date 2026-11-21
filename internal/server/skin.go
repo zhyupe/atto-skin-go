@@ -40,7 +40,7 @@ func (s *Server) setSkin(ctx context.Context, uid string, data []byte, model, to
 	defer func() { _ = tx.Rollback() }()
 	if tokenHash != "" {
 		var id string
-		if err = tx.QueryRowContext(ctx, queries.RequireSkinToken, tokenHash, uid, time.Now().Unix()).
+		if err = tx.QueryRowContext(ctx, queries.RequireSkinToken, tokenHash, uid).
 			Scan(&id); err != nil {
 			return fmt.Errorf("set skin: %w", err)
 		}
@@ -99,7 +99,7 @@ func (s *Server) uploadProtocol(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 401, "Unauthorized", "Bearer token required.")
 		return
 	}
-	t, err := s.lookupToken(r.Context(), strings.TrimPrefix(auth, "Bearer "), nil, false)
+	t, err := s.lookupToken(r.Context(), strings.TrimPrefix(auth, "Bearer "), nil)
 	if errors.Is(err, sql.ErrNoRows) {
 		apiError(w, 401, "Unauthorized", "Invalid token.")
 		return

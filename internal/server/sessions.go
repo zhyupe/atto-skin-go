@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,23 +17,9 @@ import (
 var errNoSession = errors.New("web session is invalid or expired")
 
 func newCookieStore(ctx context.Context, db *sql.DB) (*sessions.CookieStore, error) {
-	q := queries.New(db)
-	key, err := q.GetSetting(ctx, "web_cookie_key")
-	if errors.Is(err, sql.ErrNoRows) {
-		key = make([]byte, 96)
-		if _, err = rand.Read(key); err != nil {
-			return nil, fmt.Errorf("generate cookie key: %w", err)
-		}
-		if _, err = q.PutSetting(ctx, queries.PutSettingParams{Key: "web_cookie_key", Value: key}); err != nil {
-			return nil, fmt.Errorf("persist cookie key: %w", err)
-		}
-		key, err = q.GetSetting(ctx, "web_cookie_key")
-	}
+	key, err := loadSecretKey(ctx, db, "web_cookie_key", 96)
 	if err != nil {
-		return nil, fmt.Errorf("read cookie key: %w", err)
-	}
-	if len(key) != 96 {
-		return nil, fmt.Errorf("cookie key has invalid length %d", len(key))
+		return nil, fmt.Errorf("initialize cookie store: %w", err)
 	}
 	store := sessions.NewCookieStore(key[:64], key[64:])
 	store.MaxAge(86400)

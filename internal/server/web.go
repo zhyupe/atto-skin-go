@@ -69,7 +69,12 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 		internalError(r.Context(), w, err)
 		return
 	}
-	message := map[string]string{"profile": "角色名已保存。请在启动器中刷新登录。", skinKind: "皮肤已保存。重新进入服务器即可加载。", "removed": "皮肤已移除，将使用默认外观。"}[r.URL.Query().Get("saved")]
+	message := map[string]string{
+		"profile":      "角色名已保存。请在启动器中刷新登录。",
+		skinKind:       "皮肤已保存。重新进入服务器即可加载。",
+		"removed":      "皮肤已移除，将使用默认外观。",
+		"launcher-key": "启动器密钥已重置。",
+	}[r.URL.Query().Get("saved")]
 	page := 0
 	if raw := r.URL.Query().Get("history_page"); raw != "" {
 		page, err = strconv.Atoi(raw)

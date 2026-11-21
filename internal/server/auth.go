@@ -233,27 +233,3 @@ func (s *Server) rename(w http.ResponseWriter, r *http.Request, v session) {
 	}
 	http.Redirect(w, r, "/?saved=profile", http.StatusSeeOther)
 }
-func (s *Server) rotateKey(w http.ResponseWriter, r *http.Request, v session) {
-	key := randomHex()
-	tx, err := s.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		internalError(r.Context(), w, err)
-		return
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err = queries.New(tx).
-		SetLauncherSecret(r.Context(), queries.SetLauncherSecretParams{SecretHash: digest(key), ID: v.User.ID}); err != nil {
-		internalError(r.Context(), w, err)
-		return
-	}
-	if _, err = queries.New(tx).DeleteUserTokens(r.Context(), v.User.ID); err != nil {
-		internalError(r.Context(), w, err)
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		internalError(r.Context(), w, err)
-		return
-	}
-	v.User.SecretHash = digest(key)
-	s.render(r.Context(), w, v, "启动器密钥已更新，旧密钥和游戏会话已失效。", key, 200)
-}

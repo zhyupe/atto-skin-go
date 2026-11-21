@@ -27,6 +27,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zhyupe/atto-skin-go/internal/database/queries"
 )
 
 type fakeOIDC struct {
@@ -198,7 +200,10 @@ func seed(t *testing.T, s *Server, subject, name string) (user, string) {
 		t.Fatal(err)
 	}
 	key := randomHex()
-	if _, err = s.db.Exec("UPDATE users SET name=?,secret_hash=? WHERE id=?", name, digest(key), u.ID); err != nil {
+	if _, err = s.db.Exec("UPDATE users SET name=? WHERE id=?", name, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.saveLauncherSecret(t.Context(), queries.New(s.db), u.ID, key); err != nil {
 		t.Fatal(err)
 	}
 	u, err = s.userByID(t.Context(), u.ID)
@@ -571,7 +576,7 @@ func TestRenameCSRFAndKeyRotation(t *testing.T) {
 		t.Fatal("stale name")
 	}
 	raw = token["accessToken"].(string)
-	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 200)
+	expect(t, formReq(s, "/account/launcher-key", url.Values{"csrf": {csrf}}, cookie), 303)
 	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 403)
 	expect(
 		t,
@@ -741,11 +746,35 @@ func TestMetadataPersistenceExpirationAndProxy(t *testing.T) {
 		),
 		204,
 	)
-	s.db.Exec("UPDATE tokens SET expires=0")
-	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}), 403)
+	if _, err = s.db.Exec("UPDATE tokens SET issued=0"); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.cleanup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/validate", map[string]string{"accessToken": raw}), 204)
+	expect(
+		t,
+		jsonReq(
+			s,
+			"/api/yggdrasil/sessionserver/session/minecraft/join",
+			map[string]string{"accessToken": raw, "selectedProfile": u.ID, "serverId": "x"},
+		),
+		204,
+	)
+	expect(
+		t,
+		request(
+			s,
+			"GET",
+			"/api/yggdrasil/sessionserver/session/minecraft/hasJoined?username=Alice&serverId=x",
+			nil,
+			nil,
+			nil,
+		),
+		200,
+	)
+	expect(t, jsonReq(s, "/api/yggdrasil/authserver/refresh", map[string]string{"accessToken": raw}), 200)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
 	req.Header.Set("X-Real-IP", "203.0.113.2")

@@ -35,7 +35,10 @@ UPDATE tokens SET stale=1 WHERE user_id=?;
 DELETE FROM joins WHERE user_id=?;
 
 -- name: SetLauncherSecret :execresult
-UPDATE users SET secret_hash=? WHERE id=?;
+UPDATE users SET secret_hash=?,launcher_secret=? WHERE id=?;
+
+-- name: GetLauncherSecret :one
+SELECT launcher_secret FROM users WHERE id=?;
 
 -- name: DeleteUserTokens :execresult
 DELETE FROM tokens WHERE user_id=?;
@@ -70,7 +73,7 @@ SELECT EXISTS(SELECT 1 FROM skin_history WHERE user_id=? AND skin_hash=? AND mod
 INSERT INTO skin_history(user_id,skin_hash,model,last_used) VALUES(?,?,?,0);
 
 -- name: RequireSkinToken :one
-SELECT user_id FROM tokens WHERE hash=? AND user_id=? AND expires>? AND stale=0;
+SELECT user_id FROM tokens WHERE hash=? AND user_id=? AND stale=0;
 
 -- name: ArchiveCurrentSkin :execresult
 INSERT OR IGNORE INTO skin_history(user_id,skin_hash,model,last_used)
@@ -98,10 +101,10 @@ SELECT id,name,secret_hash,skin_hash,model FROM users WHERE issuer=? AND subject
 SELECT count(*) FROM skin_history WHERE user_id=?;
 
 -- name: LookupToken :one
-SELECT user_id,client,stale FROM tokens WHERE hash=? AND expires>?;
+SELECT user_id,client FROM tokens WHERE hash=? AND stale=0;
 
 -- name: CreateToken :execresult
-INSERT INTO tokens(hash,user_id,client,issued,expires) VALUES(?,?,?,?,?);
+INSERT INTO tokens(hash,user_id,client,issued) VALUES(?,?,?,?);
 
 -- name: PruneTokens :execresult
 DELETE FROM tokens WHERE tokens.user_id=? AND tokens.rowid NOT IN (SELECT tokens.rowid FROM tokens WHERE tokens.user_id=? ORDER BY tokens.rowid DESC LIMIT 10);
@@ -110,7 +113,7 @@ DELETE FROM tokens WHERE tokens.user_id=? AND tokens.rowid NOT IN (SELECT tokens
 SELECT id,name,secret_hash,skin_hash,model FROM users WHERE id=? AND secret_hash=?;
 
 -- name: ConsumeToken :one
-DELETE FROM tokens WHERE hash=? AND expires>? AND (? IS NULL OR client=?) RETURNING user_id,client;
+DELETE FROM tokens WHERE hash=? AND (? IS NULL OR client=?) RETURNING user_id,client;
 
 -- name: DeleteToken :execresult
 DELETE FROM tokens WHERE hash=?;
@@ -120,12 +123,12 @@ DELETE FROM tokens WHERE tokens.user_id=? AND EXISTS(SELECT 1 FROM users WHERE i
 
 -- name: JoinServer :execresult
 INSERT INTO joins(server_id,user_id,token_hash,ip,expires)
- SELECT ?,tokens.user_id,tokens.hash,?,? FROM tokens WHERE tokens.hash=? AND tokens.user_id=? AND tokens.expires>? AND tokens.stale=0
+ SELECT ?,tokens.user_id,tokens.hash,?,? FROM tokens WHERE tokens.hash=? AND tokens.user_id=? AND tokens.stale=0
  ON CONFLICT(server_id,user_id) DO UPDATE SET token_hash=excluded.token_hash,ip=excluded.ip,expires=excluded.expires;
 
 -- name: FindJoinedUser :one
 SELECT u.id FROM joins j JOIN users u ON u.id=j.user_id JOIN tokens t ON t.hash=j.token_hash
- WHERE j.server_id=? AND u.name=? COLLATE NOCASE AND j.expires>? AND t.expires>? AND t.stale=0 AND (?='' OR j.ip=?);
+ WHERE j.server_id=? AND u.name=? COLLATE NOCASE AND j.expires>? AND t.stale=0 AND (?='' OR j.ip=?);
 
 -- name: MatchImportUser :many
 SELECT id,issuer,subject,name,skin_hash,model FROM users WHERE id=? OR (issuer=? AND subject=?) OR (? AND name=? COLLATE NOCASE);
@@ -144,9 +147,6 @@ UPDATE users SET session_version=session_version+1 WHERE id=?;
 
 -- name: ExpireJoins :execresult
 DELETE FROM joins WHERE expires<=?;
-
--- name: ExpireTokens :execresult
-DELETE FROM tokens WHERE expires<=?;
 
 -- name: ExpireWebSessions :execresult
 DELETE FROM web_sessions WHERE expires<=?;

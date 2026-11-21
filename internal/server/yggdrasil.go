@@ -112,7 +112,6 @@ type tokenRequest struct {
 }
 type gameToken struct {
 	Hash, UserID, Client string
-	Stale                bool
 }
 
 func forbidden(w http.ResponseWriter) {
@@ -137,22 +136,20 @@ func (s *Server) credentials(w http.ResponseWriter, r *http.Request, req authReq
 	}
 	return u, true
 }
-func (s *Server) lookupToken(ctx context.Context, raw string, client *string, allowStale bool) (gameToken, error) {
+func (s *Server) lookupToken(ctx context.Context, raw string, client *string) (gameToken, error) {
 	t := gameToken{Hash: digest(raw)}
-	err := s.db.QueryRowContext(ctx, queries.LookupToken, t.Hash, time.Now().Unix()).
-		Scan(&t.UserID, &t.Client, &t.Stale)
+	err := s.db.QueryRowContext(ctx, queries.LookupToken, t.Hash).Scan(&t.UserID, &t.Client)
 	if err != nil {
 		return t, fmt.Errorf("lookup token: %w", err)
 	}
-	if (t.Stale && !allowStale) || (client != nil && *client != t.Client) {
+	if client != nil && *client != t.Client {
 		return t, sql.ErrNoRows
 	}
 	return t, nil
 }
 func insertToken(ctx context.Context, tx *sql.Tx, uid, client, raw string) error {
-	now := time.Now()
 	if _, err := queries.New(tx).
-		CreateToken(ctx, queries.CreateTokenParams{Hash: digest(raw), UserID: uid, Client: client, Issued: now.Unix(), Expires: now.Add(15 * 24 * time.Hour).Unix()}); err != nil {
+		CreateToken(ctx, queries.CreateTokenParams{Hash: digest(raw), UserID: uid, Client: client, Issued: time.Now().Unix()}); err != nil {
 		return fmt.Errorf("insert token: %w", err)
 	}
 	_, err := queries.New(tx).PruneTokens(ctx, queries.PruneTokensParams{UserID: uid, UserID_2: uid})
@@ -232,7 +229,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var uid, client string
-	err = tx.QueryRowContext(r.Context(), queries.ConsumeToken, digest(req.AccessToken), time.Now().Unix(), req.ClientToken, req.ClientToken).
+	err = tx.QueryRowContext(r.Context(), queries.ConsumeToken, digest(req.AccessToken), req.ClientToken, req.ClientToken).
 		Scan(&uid, &client)
 	if errors.Is(err, sql.ErrNoRows) {
 		forbidden(w)
@@ -263,7 +260,7 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	_, err := s.lookupToken(r.Context(), req.AccessToken, req.ClientToken, false)
+	_, err := s.lookupToken(r.Context(), req.AccessToken, req.ClientToken)
 	if errors.Is(err, sql.ErrNoRows) {
 		forbidden(w)
 		return
@@ -317,7 +314,7 @@ func (s *Server) join(w http.ResponseWriter, r *http.Request) {
 	}
 	// Insert from a valid token in one statement, avoiding revocation races.
 	result, err := queries.New(s.db).
-		JoinServer(r.Context(), queries.JoinServerParams{ServerID: req.ServerID, Ip: s.clientIP(r), Expires: time.Now().Add(30 * time.Second).Unix(), Hash: digest(req.AccessToken), UserID: req.SelectedProfile, Expires_2: time.Now().Unix()})
+		JoinServer(r.Context(), queries.JoinServerParams{ServerID: req.ServerID, Ip: s.clientIP(r), Expires: time.Now().Add(30 * time.Second).Unix(), Hash: digest(req.AccessToken), UserID: req.SelectedProfile})
 	if err != nil {
 		internalError(r.Context(), w, err)
 		return
@@ -345,7 +342,7 @@ func (s *Server) hasJoined(w http.ResponseWriter, r *http.Request) {
 		ip = parsed.Unmap().String()
 	}
 	var uid string
-	err := s.db.QueryRowContext(r.Context(), queries.FindJoinedUser, q.Get("serverId"), q.Get("username"), time.Now().Unix(), time.Now().Unix(), ip, ip).
+	err := s.db.QueryRowContext(r.Context(), queries.FindJoinedUser, q.Get("serverId"), q.Get("username"), time.Now().Unix(), ip, ip).
 		Scan(&uid)
 	if errors.Is(err, sql.ErrNoRows) {
 		w.WriteHeader(http.StatusNoContent)
